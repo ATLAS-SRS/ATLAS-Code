@@ -1,0 +1,48 @@
+services:
+  # ---------------------------------------------------------
+  # 1. IL MESSAGE BROKER (APACHE KAFKA UFFICIALE)
+  # Deve partire per primo, non dipende da nessuno
+  # ---------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: banca-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: "banca-aemilia-cluster-1"
+
+  # ---------------------------------------------------------
+  # 2. IL MICROSERVIZIO IN INGRESSO (API GATEWAY)
+  # Dipende da Kafka per poter salvare i messaggi
+  # ---------------------------------------------------------
+  api-gateway:
+    build: ./ATLAS-Gateway  # <-- Percorso alla cartella del Gateway
+    container_name: banca-gateway
+    restart: on-failure     # Resilienza se Kafka è lento a partire
+    ports:
+      - "8000:8000"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    depends_on:
+      - kafka
+
+  # ---------------------------------------------------------
+  # 3. IL GENERATORE DI TRAFFICO (TRANSACTION CLIENT)
+  # Dipende dal Gateway per potergli inviare i dati
+  # ---------------------------------------------------------
+  transaction-client:
+    build: ./ATLAS-Client   # <-- Percorso alla cartella del Client (modifica se necessario)
+    container_name: python_traffic_client
+    restart: unless-stopped
+    environment:
+      # Punta al nome del container del Gateway, non a localhost!
+      - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
+      - SLEEP_TIME=1.5
+    depends_on:
+      - api-gateway
