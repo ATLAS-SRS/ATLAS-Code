@@ -5,39 +5,50 @@ services:
   # ---------------------------------------------------------
   kafka:
     image: apache/kafka:3.7.0
-    container_name: banca-kafka
+    container_name: kafka
     ports:
-      - "9092:9092"
+      - "9094:9094" # Porta mappata per l'host esterno (opzionale, ma raccomandata)
     environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      CLUSTER_ID: "banca-aemilia-cluster-1"
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      # Doppio listener: INTERNAL per la rete Docker, EXTERNAL per il localhost della tua macchina
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
 
   # ---------------------------------------------------------
   # 2. IL MICROSERVIZIO IN INGRESSO (API GATEWAY)
   # Dipende da Kafka per poter salvare i messaggi
   # ---------------------------------------------------------
   api-gateway:
-    build: ./ATLAS-Gateway  # <-- Percorso alla cartella del Gateway
+    build: ../ATLAS-Gateway  # <-- Percorso alla cartella del Gateway
     container_name: banca-gateway
-    restart: on-failure     # Resilienza se Kafka è lento a partire
     ports:
       - "8000:8000"
     environment:
       - KAFKA_BROKER=kafka:9092
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy  # ORA ASPETTA CHE KAFKA SIA VERAMENTE PRONTO
+    restart: unless-stopped
 
   # ---------------------------------------------------------
   # 3. IL GENERATORE DI TRAFFICO (TRANSACTION CLIENT)
   # Dipende dal Gateway per potergli inviare i dati
   # ---------------------------------------------------------
   transaction-client:
-    build: ./ATLAS-Client   # <-- Percorso alla cartella del Client (modifica se necessario)
+    build: ../ATLAS-Client   # <-- Percorso alla cartella del Client (modifica se necessario)
     container_name: python_traffic_client
     restart: unless-stopped
     environment:
@@ -45,4 +56,20 @@ services:
       - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
       - SLEEP_TIME=1.5
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+
+  # ---------------------------------------------------------
+  # 4. IL MICROSERVIZIO DI VALUTAZIONE (EVALU)
+  # ---------------------------------------------------------
+  kafka-consumer:
+    build: ../ATLAS-EvaluationSystem  # <-- Percorso alla cartella dell'Evaluation System
+    container_name: kafka_consumer_locale
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
