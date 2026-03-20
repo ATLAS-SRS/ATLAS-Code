@@ -1,64 +1,90 @@
 import json
 import os
+import sys
+import argparse
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
-def elabora_transazione(messaggio):
-    """
-    Qui inseriremo la logica per chiamare il DB e verificare lo storico.
-    Per ora, ci limitiamo a stampare il contenuto.
-    """
+class TransactionConsumer:
+    def __init__(self, broker_url, group_id, topic, auto_offset='earliest'):
+        """
+        Inizializza il consumer Kafka. Nessun hardcoding dei parametri operativi.
+        """
+        conf = {
+            'bootstrap.servers': broker_url, 
+            'group.id': group_id,
+            'auto.offset.reset': auto_offset
+        }
+        self.topic = topic
+        self.consumer = Consumer(conf)
+        self.running = False
+
+    def start(self, callback_func):
+        """
+        Avvia il ciclo di consumo. 
+        Riceve una funzione (callback_func) che definisce COSA fare con il messaggio.
+        """
+        self.consumer.subscribe([self.topic])
+        self.running = True
+        print(f"[DEBUG] Sottoscrizione al topic '{self.topic}' completata.", flush=True)
+
+        try:
+            while self.running:
+                msg = self.consumer.poll(timeout=1.0)
+
+                if msg is None:
+                    continue
+
+                if msg.error():
+                    # Gestione errori Kafka
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                        continue
+                    else:
+                        raise KafkaException(msg.error())
+                else:
+                    # Delega l'elaborazione del messaggio alla funzione esterna
+                    valore_msg = msg.value().decode('utf-8')
+                    callback_func(valore_msg)
+        finally:
+            self.close()
+
+    def stop(self):
+        """Segnala al loop di fermarsi."""
+        self.running = False
+
+    def close(self):
+        """Rilascia le risorse del consumer."""
+        self.consumer.close()
+        print("[DEBUG] Consumer chiuso correttamente.")
+
+# --- SEZIONE STANDALONE ---
+
+def elabora_transazione_default(messaggio):
+    """Logica di default usata quando lo script è eseguito direttamente."""
     try:
-        # Supponiamo che il messaggio sia in formato JSON
         transazione = json.loads(messaggio)
         print(f"Transazione ricevuta: {transazione}")
     except json.JSONDecodeError:
-        print(f"Errore di decodifica JSON. Messaggio raw: {messaggio}")
+        print(f"Errore di decodifica JSON. Messaggio raw: {messaggio}", file=sys.stderr)
 
-def extract_transactions_from_kafka():
-    # Configurazione del Consumer
-    bootstrap_servers = os.getenv('KAFKA_BROKER', 'localhost:9092')
-    conf = {
-        'bootstrap.servers': bootstrap_servers, 
-        'group.id': 'transaction_group_1a',
-        'auto.offset.reset': 'earliest'
-    }
+def main():
+    parser = argparse.ArgumentParser(description="Kafka Transaction Consumer")
+    # L'ambiente è il fallback, ma la CLI ha la precedenza
+    parser.add_argument("--broker", default=os.getenv('KAFKA_BROKER', 'localhost:9092'), help="Indirizzo Kafka broker")
+    parser.add_argument("--topic", default="raw-transactions", help="Nome del topic")
+    parser.add_argument("--group", default="transaction_group_1a", help="Consumer group ID")
+    
+    args = parser.parse_args()
 
-    consumer = Consumer(conf)
-    topic = 'raw-transactions' # Il nome del tuo topic Kafka
-
+    app = TransactionConsumer(args.broker, args.group, args.topic)
+    
     try:
-        consumer.subscribe([topic])
-        print(f"[DEBUG] Sottoscrizione al topic '{topic}' completata.", flush=True)
-
-        while True:
-            # Poll per nuovi messaggi (timeout di 1 secondo)
-            msg = consumer.poll(timeout=1.0)
-
-            if msg is None:
-                continue
-
-            if msg.error():
-                print(f"Errore nel messaggio: {msg.error()}")
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    # Fine della partizione, non è un vero errore
-                    continue
-                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
-                    # Il topic non esiste ancora, ignora e riprova al prossimo ciclo
-                    continue
-                elif msg.error():
-                    raise KafkaException(msg.error())
-            else:
-                print(f"Messaggio ricevuto: {msg.value().decode('utf-8')}")
-                # Messaggio letto correttamente
-                valore_msg = msg.value().decode('utf-8')
-                elabora_transazione(valore_msg)
-
+        # Passiamo la logica di default al loop
+        app.start(elabora_transazione_default)
     except KeyboardInterrupt:
-        print("Interruzione manuale da tastiera.")
-    finally:
-        # Chiude il consumer in modo pulito per rilasciare il gruppo
-        consumer.close()
-        print("Consumer chiuso.")
+        print("\nInterruzione manuale da tastiera.")
+        app.stop()
 
 if __name__ == '__main__':
-    extract_transactions_from_kafka()
+    main()
