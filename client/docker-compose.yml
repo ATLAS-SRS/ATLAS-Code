@@ -1,19 +1,17 @@
 services:
-  # 1. IL SERVIZIO DEL TUO COLLEGA (Il Gateway)
   api-gateway:
     build: ../ATLAS-Gateway # O l'immagine se la pubblica
     container_name: gateway_locale
     ports:
       - "8000:8000" # Espone la porta per poterlo interrogare dal tuo browser
 
-  # 2. IL TUO SERVIZIO (Il Client)
   transaction-client:
     build: .
     container_name: python_traffic_client
     environment:
       # ECCO LA MAGIA:
       # Invece di localhost, usi il nome del servizio del collega ("api-gateway")
-      - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
+      - GATEWAY_URL=http://api-gateway:8000//api/v1/transactions
       - SLEEP_TIME=1.5
     depends_on:
       - api-gateway # Dice a Docker di avviare prima il gateway
