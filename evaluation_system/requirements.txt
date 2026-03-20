@@ -1,0 +1,8 @@
+# Client Kafka ad alte prestazioni (basato su C)
+confluent-kafka==2.3.0
+
+# Driver per Apache Cassandra (storico resiliente)
+cassandra-driver==3.29.0
+
+# Client per Redis (cache/velocità estrema)
+redis==5.0.3
