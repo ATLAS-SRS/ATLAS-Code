@@ -1,12 +1,20 @@
 import argparse
+import os
 import sys
 import maxminddb
 
 class FastIPLocator:
-    def __init__(self, db_path='GeoLite2-City.mmdb'):
+    def __init__(self, db_filename='GeoLite2-City.mmdb'):
         """
         Inizializza il localizzatore aprendo il file MMDB.
         """
+
+        # Trova la directory in cui si trova questo file python
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Costruisce il percorso assoluto verso data/GeoLite2-City.mmdb
+        db_path = os.path.join(base_dir, 'data', db_filename)
+
         try:
             self.reader = maxminddb.open_database(db_path)
         except FileNotFoundError:
