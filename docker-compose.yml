@@ -32,7 +32,7 @@ services:
   # Dipende da Kafka per poter salvare i messaggi
   # ---------------------------------------------------------
   api-gateway:
-    build: ../ATLAS-Gateway  # <-- Percorso alla cartella del Gateway
+    build: ./gateway  # <-- Percorso alla cartella del Gateway
     container_name: banca-gateway
     ports:
       - "8000:8000"
@@ -48,7 +48,7 @@ services:
   # Dipende dal Gateway per potergli inviare i dati
   # ---------------------------------------------------------
   transaction-client:
-    build: ../ATLAS-Client   # <-- Percorso alla cartella del Client (modifica se necessario)
+    build: ./client   # <-- Percorso alla cartella del Client (modifica se necessario)
     container_name: python_traffic_client
     restart: unless-stopped
     environment:
@@ -65,7 +65,7 @@ services:
   # 4. IL MICROSERVIZIO DI VALUTAZIONE (EVALU)
   # ---------------------------------------------------------
   kafka-consumer:
-    build: ../ATLAS-EvaluationSystem  # <-- Percorso alla cartella dell'Evaluation System
+    build: ./evaluation_system  # <-- Percorso alla cartella dell'Evaluation System
     container_name: kafka_consumer_locale
     environment:
       - KAFKA_BROKER=kafka:9092
