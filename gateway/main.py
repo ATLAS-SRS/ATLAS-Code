@@ -56,7 +56,7 @@ class Transaction(BaseModel):
 
 # --- 6. ENDPOINT PRINCIPALE ---
 @app.post("/api/v1/transactions", status_code=status.HTTP_202_ACCEPTED)
-@limiter.limit("10/minute")  # Regola di affidabilità: blocca se supera le 10 richieste/min
+#@limiter.limit("10/minute")  # Regola di affidabilità: blocca se supera le 10 richieste/min
 async def ingest_transaction(request: Request, transaction: Transaction):
     try:
         # 1. Serializziamo il dato validato

@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^python -c \"import sys; sys\\.path\\.append\\('scaling-agent'\\); from scaling_server import server; print\\('Server created successfully'\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python3 -m py_compile /home/francesco/Documents/Progetto_SRS/ATLAS-Code/scaling-agent/scaling_server\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
