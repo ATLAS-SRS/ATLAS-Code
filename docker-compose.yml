@@ -99,6 +99,7 @@ services:
       - REDIS_PORT=6379
       - REDIS_DB=0
       - REDIS_SOCKET_TIMEOUT=1.0
+      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
       - REDIS_PROFILE_TTL_SECONDS=86400
       - PYTHONUNBUFFERED=1
     depends_on:
@@ -107,6 +108,86 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=atlas_db
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d atlas_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.6.1
+    container_name: kafka-connect
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: "connect-cluster-group"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      # --- AGGIUNTE FONDAMENTALI PER SINGOLO NODO KAFKA ---
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      # --- CONVERTITORI AVRO ---
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+    command: >
+      bash -c "confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:latest && /etc/confluent/docker/run"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+
+  kafka-connect-setup:
+    image: curlimages/curl:latest
+    container_name: kafka-connect-setup
+    depends_on:
+      kafka-connect:
+        condition: service_started
+    volumes:
+      - ./sink-connector-config.json:/config.json
+    command: >
+      sh -c "
+        echo 'Attendendo le API REST di Kafka Connect...';
+        while [ $$(curl -s -o /dev/null -w %{http_code} http://kafka-connect:8083/connectors) -ne 200 ]; do
+          echo 'Kafka Connect non è ancora pronto. Riprovo in 5 secondi...';
+          sleep 5;
+        done;
+        echo 'Kafka Connect è pronto. Registro il connettore...';
+        curl -X POST -H 'Content-Type: application/json' --data @/config.json http://kafka-connect:8083/connectors;
+        echo '\nSetup del connettore completato con successo!';
+      "
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: schema-registry
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   notification-system:
     build: ./notification-system
