@@ -1,0 +1,88 @@
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  scorer:
+    image: python:3.11-slim
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/workspace
+      - KAFKA_BROKER=kafka:9092
+      - REDIS_HOST=redis
+      - KAFKA_GROUP_ID=scoring-system-docker-test
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >-
+      bash -lc "pip install --no-cache-dir -r scoring_system/requirements.txt &&
+      python -m scoring_system.scoring"
+
+  enrichment:
+    image: python:3.11-slim
+    working_dir: /workspace/enrichment_system
+    volumes:
+      - ..:/workspace
+    environment:
+      - PYTHONUNBUFFERED=1
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=raw-transactions
+      - KAFKA_ENRICHED_TOPIC=enriched-transactions
+      - KAFKA_GROUP_ID=enrichment-system-docker-test
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >-
+      bash -lc "pip install --no-cache-dir -r requirements.txt &&
+      python enrichment_system.py"
+
+  tester:
+    image: python:3.11-slim
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/workspace
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      enrichment:
+        condition: service_started
+      scorer:
+        condition: service_started
+    command: >-
+      bash -lc "pip install --no-cache-dir -r scoring_system/requirements.txt &&
+      sleep 12 &&
+      python scoring_system/tests/docker_integration_runner.py"

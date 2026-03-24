@@ -1,18 +1,13 @@
 services:
-  # ---------------------------------------------------------
-  # 1. IL MESSAGE BROKER (APACHE KAFKA UFFICIALE)
-  # Deve partire per primo, non dipende da nessuno
-  # ---------------------------------------------------------
   kafka:
     image: apache/kafka:3.7.0
     container_name: kafka
     ports:
-      - "9094:9094" # Porta mappata per l'host esterno (opzionale, ma raccomandata)
+      - "9094:9094"
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
       - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
-      # Doppio listener: INTERNAL per la rete Docker, EXTERNAL per il localhost della tua macchina
       - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
       - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
@@ -27,12 +22,30 @@ services:
       timeout: 5s
       retries: 6
 
-  # ---------------------------------------------------------
-  # 2. IL MICROSERVIZIO IN INGRESSO (API GATEWAY)
-  # Dipende da Kafka per poter salvare i messaggi
-  # ---------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   api-gateway:
-    build: ./gateway  # <-- Percorso alla cartella del Gateway
+    build: ./gateway
     container_name: banca-gateway
     ports:
       - "8000:8000"
@@ -40,36 +53,55 @@ services:
       - KAFKA_BROKER=kafka:9092
     depends_on:
       kafka:
-        condition: service_healthy  # ORA ASPETTA CHE KAFKA SIA VERAMENTE PRONTO
+        condition: service_healthy
     restart: unless-stopped
 
-  # ---------------------------------------------------------
-  # 3. IL GENERATORE DI TRAFFICO (TRANSACTION CLIENT)
-  # Dipende dal Gateway per potergli inviare i dati
-  # ---------------------------------------------------------
   transaction-client:
-    build: ./client   # <-- Percorso alla cartella del Client (modifica se necessario)
+    build: ./client
     container_name: python_traffic_client
-    restart: unless-stopped
     environment:
-      # Punta al nome del container del Gateway, non a localhost!
       - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
-      - SLEEP_TIME=1.5
+      - SLEEP_TIME=10.0
     depends_on:
       api-gateway:
         condition: service_started
       kafka:
         condition: service_healthy
+    restart: unless-stopped
 
-  # ---------------------------------------------------------
-  # 4. IL MICROSERVIZIO DI VALUTAZIONE (EVALU)
-  # ---------------------------------------------------------
-  kafka-consumer:
-    build: ./evaluation_system  # <-- Percorso alla cartella dell'Evaluation System
-    container_name: kafka_consumer_locale
+  enrichment-system:
+    build: ./enrichment_system
+    container_name: enrichment_system
     environment:
       - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=raw-transactions
+      - KAFKA_ENRICHED_TOPIC=enriched-transactions
+      - KAFKA_GROUP_ID=enrichment_system_group
+      - PYTHONUNBUFFERED=1
     depends_on:
       kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scoring-system:
+    build:
+      context: .
+      dockerfile: ./scoring_system/Dockerfile
+    container_name: scoring_system
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_ENRICHED_TOPIC=enriched-transactions
+      - KAFKA_SCORED_TOPIC=scored-transactions
+      - KAFKA_GROUP_ID=scoring_system_group
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - REDIS_SOCKET_TIMEOUT=1.0
+      - REDIS_PROFILE_TTL_SECONDS=86400
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped

@@ -9,11 +9,10 @@ class FastIPLocator:
         Inizializza il localizzatore aprendo il file MMDB.
         """
 
-        # Trova la directory in cui si trova questo file python
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Costruisce il percorso assoluto verso data/GeoLite2-City.mmdb
-        db_path = os.path.join(base_dir, 'data', db_filename)
+        # Sali di un livello (da /app/src a /app) e poi entra in data
+        project_root = os.path.dirname(base_dir) 
+        db_path = os.path.join(project_root, 'data', db_filename)
 
         try:
             self.reader = maxminddb.open_database(db_path)

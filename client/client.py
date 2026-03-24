@@ -9,6 +9,19 @@ from datetime import datetime, timezone # Aggiunto per il timestamp
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://localhost:8000/api/v1/transactions")
 SLEEP_TIME = float(os.getenv("SLEEP_TIME", 2.0))
 
+
+def generate_ip_address():
+    """Genera un IPv4 pubblico semplice evitando i range privati più comuni."""
+    first_octet = random.choice([8, 23, 45, 52, 63, 80, 91, 101, 121, 151, 185, 203])
+    return ".".join(
+        [
+            str(first_octet),
+            str(random.randint(1, 254)),
+            str(random.randint(1, 254)),
+            str(random.randint(1, 254)),
+        ]
+    )
+
 def generate_transaction():
     """Genera un payload JSON allineato al modello del Gateway."""
     return {
@@ -24,7 +37,7 @@ def generate_transaction():
             "currency": random.choice(["EUR", "USD", "GBP"]),
             "payment_method": random.choice(["credit_card", "paypal", "apple_pay"])
         },
-        
+        "ip_address": generate_ip_address(),
         # Visto che c'è "extra: allow", possiamo mandare campi extra senza far crashare il gateway
         "user_id": random.randint(100, 999)
     }

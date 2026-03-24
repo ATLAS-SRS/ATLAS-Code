@@ -5,4 +5,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 # Esponiamo la porta 8000 per le API e per le metriche
 EXPOSE 8000
-CMD ["python", "-u", "./src/kafka_consumer.py"]
+CMD ["python", "-m", "enrichment_system"]

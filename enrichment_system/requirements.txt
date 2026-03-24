@@ -1,6 +1,7 @@
 maxminddb>=2.5.0
 confluent-kafka>=2.3.0
 pytest>=8.0.0
+pydantic>=2.10.0
 
 # # Driver per Apache Cassandra (storico resiliente)
 # cassandra-driver==3.29.0
