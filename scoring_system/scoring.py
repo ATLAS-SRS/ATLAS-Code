@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any
 
 import redis
-from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from confluent_kafka import Consumer, KafkaError, KafkaException, SerializingProducer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import StringSerializer
 from pydantic import ValidationError
 
 from scoring_system.schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
@@ -15,18 +19,55 @@ from scoring_system.src.scoring_engine import RiskEvaluator
 
 class ScoringSystemApp:
     def __init__(self) -> None:
+        # --- Configurazione Connessioni ---
         broker_url = os.getenv("KAFKA_BROKER", "localhost:9092")
         group_id = os.getenv("KAFKA_GROUP_ID", "scoring_system_group")
         self.input_topic = os.getenv("KAFKA_ENRICHED_TOPIC", "enriched-transactions")
         self.output_topic = os.getenv("KAFKA_SCORED_TOPIC", "scored-transactions")
+        schema_registry_url = os.getenv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
 
+        # --- Configurazione Consumer (legge JSON dal topic di input) ---
         consumer_conf = {
             "bootstrap.servers": broker_url,
             "group.id": group_id,
             "auto.offset.reset": "earliest",
         }
         self.consumer = Consumer(consumer_conf)
-        self.producer = Producer({"bootstrap.servers": broker_url})
+
+        # --- Configurazione Producer (scrive AVRO sul topic di output) ---
+        schema_registry_conf = {"url": schema_registry_url}
+        schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+
+        # Serializzatore per la chiave (semplice stringa UTF-8)
+        key_serializer = StringSerializer("utf_8")
+
+        # Schema Avro per il valore. Include i campi necessari per il DB.
+        value_schema_str = """
+        {
+           "namespace": "com.atlas.transactions",
+           "name": "ScoredTransactionAvro",
+           "type": "record",
+           "fields" : [
+             { "name" : "transaction_id", "type" : "string" },
+             { "name" : "timestamp", "type" : { "type": "long", "logicalType": "timestamp-millis" } },
+             { "name" : "risk_score", "type" : "int" },
+             { "name" : "risk_level", "type" : "string" },
+             { "name" : "payload", "type" : "string" }
+           ]
+        }
+        """
+        value_serializer = AvroSerializer(
+            schema_registry_client, value_schema_str,
+        )
+
+        producer_conf = {
+            "bootstrap.servers": broker_url,
+            "key.serializer": key_serializer,
+            "value.serializer": value_serializer,
+        }
+        self.producer = SerializingProducer(producer_conf)
+
+        # --- Configurazione Componenti Logici ---
         self.evaluator = RiskEvaluator()
         self.running = False
         self.redis_client = RedisStateClient(
@@ -114,18 +155,34 @@ class ScoringSystemApp:
                     flush=True,
                 )
 
+        # Crea il DTO finale
         scored_transaction = ScoredTransaction(
             **incoming.model_dump(),
             risk_score=result.score,
             risk_level=result.level,
         )
 
+        # 1. Serializziamo l'intero oggetto `ScoredTransaction` in una stringa JSON.
+        #    Questo sarà il contenuto del campo 'payload' del nostro record Avro.
+        full_payload_as_json_string = scored_transaction.model_dump_json(by_alias=True)
+
+        # 2. Creiamo il dizionario che corrisponde allo schema Avro del valore.
+        avro_value = {
+            "transaction_id": scored_transaction.transaction_id,
+            "timestamp": int(scored_transaction.timestamp.timestamp() * 1000),
+            "risk_score": scored_transaction.risk_score,
+            "risk_level": scored_transaction.risk_level,
+            "payload": full_payload_as_json_string,
+        }
+
+        print(f"[INFO] Transazione valutata: ID={incoming.transaction_id} Score={result.score} Level={result.level}", flush=True)
+
         try:
             self.producer.produce(
                 topic=self.output_topic,
                 key=str(incoming.transaction_id),
-                value=scored_transaction.model_dump_json(by_alias=True),
-                callback=self.delivery_report,
+                value=avro_value,
+                on_delivery=self.delivery_report,
             )
             self.producer.poll(0)
         except Exception as exc:
