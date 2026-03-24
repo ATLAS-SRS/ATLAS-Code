@@ -62,6 +62,8 @@ services:
     environment:
       - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
       - SLEEP_TIME=10.0
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_NOTIFICATION_TOPIC=transaction-notifications
     depends_on:
       api-gateway:
         condition: service_started
@@ -105,3 +107,24 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  notification-system:
+    build: ./notification-system
+    container_name: notification_broker
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_SCORED_TOPIC=scored-transactions
+      - KAFKA_NOTIFICATION_TOPIC=transaction-notifications
+      - KAFKA_GROUP_ID=notification_broker_group
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      scoring-system:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
