@@ -89,6 +89,12 @@ The intelligent scaling agent automatically manages container replicas based on 
 - `LLM_ENABLED=true` enables local-model reasoning via LM Studio's OpenAI-compatible API
 - `/decision` exposes `llm_decision`, `rule_based_decision`, `effective_decision`, `decision_source`, and `llm_status`
 - Unsafe, low-confidence, or invalid model output falls back to deterministic rules
+- In the root Docker stack, the scaling daemon is started by `docker compose` and targets `enrichment-system` by default; override `TARGET_SERVICE` if you want to scale a different service
+
+```bash
+# Enable LM Studio-backed orchestration in the scaling agent
+LLM_ENABLED=true docker compose up --build
+```
 
 ### Automated Operation
 ```bash

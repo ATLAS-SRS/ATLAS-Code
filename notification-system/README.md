@@ -23,12 +23,14 @@ Environment variables:
 - `KAFKA_SCORED_TOPIC` - Input topic (default: scored-transactions)
 - `KAFKA_NOTIFICATION_TOPIC` - Output topic (default: transaction-notifications)
 - `KAFKA_GROUP_ID` - Consumer group (default: notification_broker_group)
+- `SCHEMA_REGISTRY_URL` - Confluent Schema Registry URL used to deserialize the Avro payload published by `scoring-system`
 
 See `.env.example` for full configuration.
 
 ## Features
 
 - Consumes scored transactions from Kafka
+- Decodes Confluent Avro records from `scoring-system` with JSON fallback for local tests
 - Transforms and publishes notifications to clients
 - Graceful error handling and recovery
 - Production-ready with Docker support

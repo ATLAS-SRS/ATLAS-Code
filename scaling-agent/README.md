@@ -84,6 +84,8 @@ The daemon runs continuously inside Docker Compose and automatically scales base
 docker compose up --build
 ```
 
+Set `LLM_ENABLED=true` before `docker compose up` to delegate scaling recommendations to the LM Studio-backed agent. In the repo-level Compose stack, `TARGET_SERVICE` defaults to `enrichment-system`.
+
 Optional local watcher:
 
 ```bash
