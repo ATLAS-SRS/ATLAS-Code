@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   kafka:
     image: apache/kafka:3.7.0
@@ -16,11 +22,17 @@ services:
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_LOG_RETENTION_HOURS=1
+      - KAFKA_LOG_RETENTION_BYTES=1073741824
+      - KAFKA_LOG_SEGMENT_BYTES=104857600
+      - KAFKA_LOG4J_ROOT_LOGLEVEL=WARN
+      - KAFKA_TOOLS_LOG4J_LOGLEVEL=WARN
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 6
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
@@ -33,6 +45,7 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    logging: *default-logging
 
   redisinsight:
     image: redis/redisinsight:latest
@@ -43,6 +56,7 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   api-gateway:
     build: ./gateway
@@ -55,6 +69,7 @@ services:
       kafka:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   transaction-client:
     build: ./client
@@ -68,6 +83,7 @@ services:
       kafka:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   enrichment-system:
     build: ./enrichment_system
@@ -82,6 +98,7 @@ services:
       kafka:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   scoring-system:
     build:
@@ -106,6 +123,7 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   postgres:
     image: postgres:16-alpine
@@ -124,40 +142,41 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
   kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.6.1
+    build:
+      context: .
+      dockerfile: Dockerfile.connect
     container_name: kafka-connect
     ports:
       - "8083:8083"
     environment:
-      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
-      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
-      CONNECT_REST_PORT: 8083
-      CONNECT_GROUP_ID: "connect-cluster-group"
-      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
-      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
-      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
-      # --- AGGIUNTE FONDAMENTALI PER SINGOLO NODO KAFKA ---
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
-      # --- CONVERTITORI AVRO ---
-      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
-      CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
-      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
-      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
-    command: >
-      bash -c "confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:latest && /etc/confluent/docker/run"
+      - CONNECT_BOOTSTRAP_SERVERS=kafka:9092
+      - CONNECT_REST_ADVERTISED_HOST_NAME=kafka-connect
+      - CONNECT_REST_PORT=8083
+      - CONNECT_GROUP_ID=connect-cluster-group
+      - CONNECT_CONFIG_STORAGE_TOPIC=_connect-configs
+      - CONNECT_OFFSET_STORAGE_TOPIC=_connect-offsets
+      - CONNECT_STATUS_STORAGE_TOPIC=_connect-status
+      - CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR=1
+      - CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR=1
+      - CONNECT_STATUS_STORAGE_REPLICATION_FACTOR=1
+      - CONNECT_KEY_CONVERTER=org.apache.kafka.connect.storage.StringConverter
+      - CONNECT_VALUE_CONVERTER=io.confluent.connect.avro.AvroConverter
+      - CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - CONNECT_PLUGIN_PATH=/usr/share/java,/usr/share/confluent-hub-components
+      - CONNECT_LOG4J_ROOT_LOGLEVEL=WARN
     depends_on:
       kafka:
         condition: service_healthy
       schema-registry:
         condition: service_started
+    logging: *default-logging
 
-  kafka-connect-setup:
+  setup-kafka-connect:
     image: curlimages/curl:latest
-    container_name: kafka-connect-setup
+    container_name: setup-kafka-connect
     depends_on:
       kafka-connect:
         condition: service_started
@@ -174,6 +193,7 @@ services:
         curl -X POST -H 'Content-Type: application/json' --data @/config.json http://kafka-connect:8083/connectors;
         echo '\nSetup del connettore completato con successo!';
       "
+    logging: *default-logging
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
@@ -181,8 +201,10 @@ services:
     ports:
       - "8081:8081"
     environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
+      - SCHEMA_REGISTRY_HOST_NAME=schema-registry
+      - SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=kafka:9092
+      - SCHEMA_REGISTRY_LOG4J_ROOT_LOGLEVEL=WARN
     depends_on:
       kafka:
         condition: service_healthy
+    logging: *default-logging

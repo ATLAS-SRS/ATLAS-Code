@@ -1,0 +1,126 @@
+.
+├── client
+│   ├── client.py
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   └── requirements.txt
+├── docker-compose.yml
+├── Dockerfile.connect
+├── enrichment_system
+│   ├── data
+│   │   ├── COPYRIGHT.txt
+│   │   ├── GeoLite2-City.mmdb
+│   │   ├── LICENSE.txt
+│   │   └── README.txt
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── enrichment_system.py
+│   ├── __pycache__
+│   │   └── enrichment_system.cpython-314.pyc
+│   ├── requirements.txt
+│   ├── schemas
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-314.pyc
+│   │   │   ├── transactions.cpython-311.pyc
+│   │   │   └── transactions.cpython-314.pyc
+│   │   └── transactions.py
+│   ├── src
+│   │   ├── fast_geoip.py
+│   │   ├── __init__.py
+│   │   ├── kafka_consumer.py
+│   │   └── __pycache__
+│   │       ├── fast_geoip.cpython-311.pyc
+│   │       ├── fast_geoip.cpython-314.pyc
+│   │       ├── __init__.cpython-311.pyc
+│   │       ├── __init__.cpython-314.pyc
+│   │       ├── kafka_consumer.cpython-311.pyc
+│   │       └── kafka_consumer.cpython-314.pyc
+│   └── tests
+│       ├── conftest.py
+│       ├── __init__.py
+│       ├── __pycache__
+│       │   ├── conftest.cpython-314.pyc
+│       │   ├── conftest.cpython-314-pytest-9.0.2.pyc
+│       │   ├── __init__.cpython-314.pyc
+│       │   ├── test_enrichment_pipeline.cpython-314.pyc
+│       │   ├── test_enrichment_pipeline.cpython-314-pytest-9.0.2.pyc
+│       │   ├── test_fast_geo.cpython-314.pyc
+│       │   └── test_fast_geo.cpython-314-pytest-9.0.2.pyc
+│       ├── test_enrichment_pipeline.py
+│       └── test_fast_geo.py
+├── gateway
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── gateway.py
+│   └── requirements.txt
+├── LICENSE
+├── monitoring
+│   └── prometheus.yml
+├── notification_system
+├── orchestrator
+├── postgres
+│   └── init.sql
+├── README.md
+├── scaling-agent
+│   ├── auto_scaler.py
+│   ├── Dockerfile
+│   ├── README.md
+│   ├── requirements.txt
+│   ├── scaling_server.py
+│   └── tests
+│       ├── test_agent.py
+│       └── test_logic.py
+├── scoring_system
+│   ├── docker-compose.test.yml
+│   ├── Dockerfile
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── __init__.cpython-314.pyc
+│   │   ├── scoring.cpython-311.pyc
+│   │   └── scoring.cpython-314.pyc
+│   ├── requirements.txt
+│   ├── schemas
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-314.pyc
+│   │   │   ├── scoring.cpython-311.pyc
+│   │   │   ├── scoring.cpython-314.pyc
+│   │   │   ├── scoring_dto.cpython-311.pyc
+│   │   │   └── scoring_dto.cpython-314.pyc
+│   │   └── scoring_dto.py
+│   ├── scoring.py
+│   ├── src
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-311.pyc
+│   │   │   ├── __init__.cpython-314.pyc
+│   │   │   ├── redis_state.cpython-311.pyc
+│   │   │   ├── redis_state.cpython-314.pyc
+│   │   │   ├── scoring_engine.cpython-311.pyc
+│   │   │   └── scoring_engine.cpython-314.pyc
+│   │   ├── redis_state.py
+│   │   └── scoring_engine.py
+│   └── tests
+│       ├── conftest.py
+│       ├── docker_integration_runner.py
+│       ├── __pycache__
+│       │   ├── conftest.cpython-311-pytest-9.0.2.pyc
+│       │   ├── conftest.cpython-314.pyc
+│       │   ├── conftest.cpython-314-pytest-9.0.2.pyc
+│       │   ├── docker_integration_runner.cpython-314.pyc
+│       │   ├── test_redis_state.cpython-311-pytest-9.0.2.pyc
+│       │   ├── test_redis_state.cpython-314.pyc
+│       │   ├── test_redis_state.cpython-314-pytest-9.0.2.pyc
+│       │   ├── test_scoring_engine.cpython-311-pytest-9.0.2.pyc
+│       │   ├── test_scoring_engine.cpython-314.pyc
+│       │   └── test_scoring_engine.cpython-314-pytest-9.0.2.pyc
+│       ├── test_redis_state.py
+│       └── test_scoring_engine.py
+├── sink-connector-config.json
+└── tree.txt
+
+26 directories, 98 files
