@@ -209,6 +209,7 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    logging: *default-logging
 
   notification-system:
     build: ./notification-system
@@ -233,6 +234,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    logging: *default-logging
 
   prometheus:
     image: prom/prometheus:latest
@@ -242,6 +244,7 @@ services:
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
+    logging: *default-logging
 
   scaling-agent:
     build: ./scaling-agent
@@ -287,5 +290,4 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
     logging: *default-logging
