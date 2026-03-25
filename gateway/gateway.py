@@ -1,4 +1,5 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import BaseModel, Field
@@ -13,6 +14,23 @@ from slowapi.errors import RateLimitExceeded
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 KAFKA_TOPIC = "raw-transactions"
 producer: AIOKafkaProducer = None
+kafka_connected: bool = False
+connection_task: asyncio.Task = None
+
+async def _kafka_connection_task():
+    global kafka_connected
+    try:
+        while not kafka_connected:
+            try:
+                await producer.start()
+                kafka_connected = True
+                print("✅ Connessione a Kafka stabilita in background.")
+                break
+            except Exception as e:
+                print(f"⚠️ Impossibile connettersi a Kafka. Riprovo in 5 secondi... Errore: {e}")
+                await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        print("⚠️ Task di connessione a Kafka annullato durante lo spegnimento.")
 
 # --- 2. CICLO DI VITA DELL'APP (Startup e Shutdown) ---
 @asynccontextmanager
@@ -20,12 +38,18 @@ async def lifespan(app: FastAPI):
     # Eseguito all'avvio: connettiamo il producer a Kafka
     global producer
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BROKER)
-    await producer.start()
-    print("✅ Connessione a Kafka stabilita.")
+    connection_task = asyncio.create_task(_kafka_connection_task())
     yield
-    # Eseguito allo spegnimento: chiudiamo la connessione in modo pulito
-    await producer.stop()
-    print("🛑 Connessione a Kafka chiusa.")
+    # Spegnimento
+    if connection_task and not connection_task.done():
+        connection_task.cancel()
+        try:
+            await connection_task
+        except asyncio.CancelledError:
+            pass
+    if kafka_connected:
+        await producer.stop()
+        print("🛑 Connessione a Kafka chiusa.")
 
 # --- 3. CONFIGURAZIONE RATE LIMITER ---
 # Usa l'IP del client per limitare le richieste (es. max 10 al minuto per IP)
@@ -57,6 +81,12 @@ class Transaction(BaseModel):
 # --- 6. ENDPOINT PRINCIPALE ---
 @app.post("/api/v1/transactions", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_transaction(request: Request, transaction: Transaction):
+    if not kafka_connected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
+            detail="Servizio di accodamento temporaneamente non pronto."
+        )
+
     try:
         # 1. Serializziamo il dato validato
         payload = transaction.model_dump_json().encode("utf-8")
@@ -77,4 +107,46 @@ async def ingest_transaction(request: Request, transaction: Transaction):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
             detail="Servizio di accodamento temporaneamente non disponibile."
+        )
+
+# --- 7. KUBERNETES PROBES ---
+
+@app.get("/health/live", status_code=status.HTTP_200_OK)
+async def liveness_probe():
+    """
+    Liveness probe: leggerissima per dimostrare che l'event loop di FastAPI 
+    è in esecuzione e non è bloccato.
+    """
+    return {"status": "alive"}
+
+@app.get("/health/ready", status_code=status.HTTP_200_OK)
+async def readiness_probe():
+    """
+    Readiness probe: verifica che il Gateway possa effettivamente 
+    comunicare con Kafka prima di accettare traffico.
+    """
+    if not kafka_connected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La connessione a Kafka non è ancora stata stabilita."
+        )
+    if producer is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Il producer Kafka non è ancora inizializzato."
+        )
+
+    try:
+        # Richiede l'aggiornamento dei metadati del cluster Kafka con un timeout di 2 secondi
+        await asyncio.wait_for(producer.client.force_metadata_update(), timeout=2.0)
+        return {"status": "ready"}
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Timeout durante la connessione al cluster Kafka."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Errore durante il controllo di readiness di Kafka: {e}"
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from enrichment_system import EvaluationSystem, build_enriched_payload
+from enrichment_system import EnrichmentSystem, build_enriched_payload
 from schemas import EnrichedTransaction, TransactionInput
 
 
@@ -47,8 +47,8 @@ def make_raw_payload(**overrides) -> dict[str, object]:
     return payload
 
 
-def make_app(geo_response: dict[str, object] | None) -> tuple[EvaluationSystem, FakeProducer, FakeGeoLocator]:
-    app = EvaluationSystem.__new__(EvaluationSystem)
+def make_app(geo_response: dict[str, object] | None) -> tuple[EnrichmentSystem, FakeProducer, FakeGeoLocator]:
+    app = EnrichmentSystem.__new__(EnrichmentSystem)
     producer = FakeProducer()
     locator = FakeGeoLocator(geo_response)
     app.producer = producer
