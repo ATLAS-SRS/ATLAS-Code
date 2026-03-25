@@ -3,63 +3,142 @@ import random
 import requests
 import os
 import uuid
-from datetime import datetime, timezone # Aggiunto per il timestamp
+from datetime import datetime, timezone
+import threading
+import json
+from collections import defaultdict
+from confluent_kafka import Consumer, KafkaException
 
-# Legge l'URL del gateway dall'ambiente di Docker
+# Configuration from environment variables
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://localhost:8000/api/v1/transactions")
 SLEEP_TIME = float(os.getenv("SLEEP_TIME", 2.0))
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_NOTIFICATION_TOPIC = os.getenv("KAFKA_NOTIFICATION_TOPIC", "transaction-notifications")
 
+# Transaction tracking
+pending_transactions = {}  # Maps transaction_id to transaction details
+transaction_lock = threading.Lock()
 
 def generate_ip_address():
-    """Genera un IPv4 pubblico semplice evitando i range privati più comuni."""
+    """Generates a simple public IPv4 address."""
     first_octet = random.choice([8, 23, 45, 52, 63, 80, 91, 101, 121, 151, 185, 203])
-    return ".".join(
-        [
-            str(first_octet),
-            str(random.randint(1, 254)),
-            str(random.randint(1, 254)),
-            str(random.randint(1, 254)),
-        ]
-    )
+    return f"{first_octet}.{random.randint(1, 254)}.{random.randint(1, 254)}.{random.randint(1, 254)}"
 
 def generate_transaction():
-    """Genera un payload JSON allineato al modello del Gateway."""
+    """Generates a transaction payload aligned with the Gateway's model."""
     return {
         "transaction_id": str(uuid.uuid4()),
-        # Genera un timestamp in formato ISO 8601 (es. 2026-03-18T15:30:00Z)
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "channel": random.choice(["web", "mobile", "app", "pos"]),
         "transaction_type": random.choice(["payment", "refund", "subscription"]),
-        
-        # Ecco il dizionario annidato che il gateway pretende!
         "payment_details": {
             "amount": round(random.uniform(5.0, 500.0), 2),
             "currency": random.choice(["EUR", "USD", "GBP"]),
-            "payment_method": random.choice(["credit_card", "paypal", "apple_pay"])
+            "payment_method": random.choice(["credit_card", "paypal", "apple_pay"]),
         },
         "ip_address": generate_ip_address(),
-        # Visto che c'è "extra: allow", possiamo mandare campi extra senza far crashare il gateway
-        "user_id": random.randint(100, 999)
+        "user_id": random.randint(100, 999),
     }
 
-def main():
-    print(f"🚀 Avvio del client Python. Invio traffico a: {GATEWAY_URL}")
+def process_notification(notification: dict) -> None:
+    """Process a received notification and make a decision.
     
+    Args:
+        notification: The notification payload from Kafka
+    """
+    transaction_id = notification.get("transaction_id", "N/A")
+    short_id = transaction_id[:8] if isinstance(transaction_id, str) else "N/A"
+    
+    # Check if this is an approved transaction
+    if notification.get("status") == "ERROR":
+        error_reason = notification.get("error_reason", "Unknown error")
+        print(f"❌ Transaction {short_id} ERROR: {error_reason}")
+        with transaction_lock:
+            pending_transactions.pop(transaction_id, None)
+        return
+    
+    risk_score = notification.get("risk_score")
+    risk_level = notification.get("risk_level")
+    approved = notification.get("approved", False)
+    
+    with transaction_lock:
+        tx_details = pending_transactions.pop(transaction_id, None)
+    
+    if approved or risk_level == "APPROVATA":
+        print(f"✅ Transaction {short_id} APPROVED | Score: {risk_score} | Level: {risk_level}")
+        if tx_details:
+            print(f"   💰 Amount: {tx_details.get('payment_details', {}).get('amount')} {tx_details.get('payment_details', {}).get('currency')}")
+    else:
+        print(f"❌ Transaction {short_id} REFUSED | Score: {risk_score} | Level: {risk_level}")
+        if tx_details:
+            print(f"   💰 Amount: {tx_details.get('payment_details', {}).get('amount')} {tx_details.get('payment_details', {}).get('currency')}")
+            print(f"   ⚠️  Reason: {risk_level}")
+
+def consume_and_process_notifications():
+    """Kafka consumer to process transaction notifications."""
+    conf = {
+        "bootstrap.servers": KAFKA_BROKER,
+        "group.id": "client_notification_group",
+        "auto.offset.reset": "earliest",
+    }
+    consumer = Consumer(conf)
+    consumer.subscribe([KAFKA_NOTIFICATION_TOPIC])
+
+    print(f"👂 Listening for transaction notifications on topic '{KAFKA_NOTIFICATION_TOPIC}'...")
+
     while True:
-        payload = generate_transaction()
+        msg = consumer.poll(timeout=1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            if msg.error().code() != KafkaException._PARTITION_EOF:
+                print(f"🔥 Kafka Error: {msg.error()}")
+            continue
+
         try:
-            # Aggiungiamo timeout per evitare che il client si blocchi se il gateway è lento
-            response = requests.post(GATEWAY_URL, json=payload, timeout=5)
-            
-            # Stampiamo il risultato. Il gateway del collega restituisce 202 ACCEPTED
-            if response.status_code == 202:
-                print(f"✅ Inviato ID {payload['transaction_id'][:8]}... | Status: 202 ACCEPTED")
-            else:
-                print(f"⚠️ Inviato ID {payload['transaction_id'][:8]}... | Status inatteso: {response.status_code} - {response.text}")
-                
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Errore di connessione al gateway: {e}")
-        
+            notification = json.loads(msg.value().decode("utf-8"))
+            process_notification(notification)
+
+        except json.JSONDecodeError:
+            print("Could not decode notification message:", msg.value())
+        except Exception as e:
+            print(f"An unexpected error occurred processing notification: {e}")
+
+def send_transaction():
+    """Send a transaction to the gateway."""
+    payload = generate_transaction()
+    transaction_id = payload["transaction_id"]
+    
+    try:
+        response = requests.post(GATEWAY_URL, json=payload, timeout=5)
+        if response.status_code == 202:
+            with transaction_lock:
+                pending_transactions[transaction_id] = payload
+            print(f"📤 Sent ID {transaction_id[:8]}... | Status: 202 ACCEPTED")
+        else:
+            print(f"⚠️ Sent ID {transaction_id[:8]}... | Unexpected Status: {response.status_code}")
+            if response.text:
+                print(f"   Response: {response.text[:100]}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Gateway connection error: {e}")
+
+def main():
+    print(f"🚀 Starting Client with Notification System")
+    print(f"   Gateway: {GATEWAY_URL}")
+    print(f"   Notification Topic: {KAFKA_NOTIFICATION_TOPIC}")
+    print(f"   Transaction Send Interval: {SLEEP_TIME}s")
+    print()
+
+    # Start Kafka consumer in a background thread
+    consumer_thread = threading.Thread(target=consume_and_process_notifications, daemon=True)
+    consumer_thread.start()
+
+    # Give consumer time to connect
+    time.sleep(2)
+
+    # Main loop: send transactions
+    while True:
+        send_transaction()
         time.sleep(SLEEP_TIME)
 
 if __name__ == "__main__":

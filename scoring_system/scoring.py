@@ -115,7 +115,7 @@ class ScoringSystemApp:
     def close(self) -> None:
         self.consumer.close()
         self.producer.flush()
-        print("[INFO] Consumer chiuso e producer flushato.", flush=True)
+        print("[INFO] Consumer chiuso, producers flushati.", flush=True)
 
     def process_message(self, message: str) -> None:
         try:
@@ -187,6 +187,13 @@ class ScoringSystemApp:
             self.producer.poll(0)
         except Exception as exc:
             print(f"[ERROR] Errore durante la pubblicazione Kafka: {exc}", file=sys.stderr, flush=True)
+            return
+        
+        print(
+            f"[NOTIFICATION] Transazione {incoming.transaction_id} processata. "
+            f"Score: {result.score}, Level: {result.level}",
+            flush=True,
+        )
 
 
 def main() -> None:

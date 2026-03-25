@@ -77,6 +77,8 @@ services:
     environment:
       - GATEWAY_URL=http://api-gateway:8000/api/v1/transactions
       - SLEEP_TIME=10.0
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_NOTIFICATION_TOPIC=transaction-notifications
     depends_on:
       api-gateway:
         condition: service_started
@@ -207,4 +209,83 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  notification-system:
+    build: ./notification-system
+    container_name: notification_broker
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_SCORED_TOPIC=scored-transactions
+      - KAFKA_NOTIFICATION_TOPIC=transaction-notifications
+      - KAFKA_GROUP_ID=notification_broker_group
+      - SCHEMA_REGISTRY_URL=http://schema-registry:8081
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+      scoring-system:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  scaling-agent:
+    build: ./scaling-agent
+    container_name: scaling-agent
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-atlas-code}
+      - COMPOSE_WORKDIR=/workspace
+      - SCALING_MODE=daemon
+      - SCALING_HTTP_HOST=0.0.0.0
+      - SCALING_HTTP_PORT=8001
+      - SCALING_METRICS_PORT=8002
+      - TARGET_SERVICE=${TARGET_SERVICE:-enrichment-system}
+      - LLM_ENABLED=${LLM_ENABLED:-true}
+      - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
+      - LMSTUDIO_API_KEY=${LMSTUDIO_API_KEY:-}
+      - CHECK_INTERVAL_SEC=${CHECK_INTERVAL_SEC:-60}
+      - SCALE_COOLDOWN_SEC=${SCALE_COOLDOWN_SEC:-300}
+      - MIN_REPLICAS=${MIN_REPLICAS:-1}
+      - MAX_REPLICAS=${MAX_REPLICAS:-5}
+      - CPU_THRESHOLD_PERCENT=${CPU_THRESHOLD_PERCENT:-70}
+      - MEMORY_THRESHOLD_PERCENT=${MEMORY_THRESHOLD_PERCENT:-80}
+      - REQUEST_RATE_THRESHOLD=${REQUEST_RATE_THRESHOLD:-100}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      prometheus:
+        condition: service_started
+      enrichment-system:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
     logging: *default-logging

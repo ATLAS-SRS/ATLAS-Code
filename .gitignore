@@ -210,3 +210,7 @@ __marimo__/
 # Database MaxMind
 *.mmdb
 evaluation_system/data/*.mmdb
+
+.vscode/
+
+.github/
