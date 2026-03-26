@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from typing import Any
 
 import redis
@@ -12,9 +13,14 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 from pydantic import ValidationError
 
+from scoring_system.src.health_probe import HealthServer
 from scoring_system.schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
 from scoring_system.src.redis_state import RedisStateClient
 from scoring_system.src.scoring_engine import RiskEvaluator
+
+# Health check tracking
+last_consume_time = time.time()
+redis_client_global = None
 
 
 class ScoringSystemApp:
@@ -88,12 +94,14 @@ class ScoringSystemApp:
             print(f"[ERROR] Message delivery failed: {err}", file=sys.stderr, flush=True)
 
     def run(self) -> None:
+        global last_consume_time
         self.consumer.subscribe([self.input_topic])
         self.running = True
         print(f"[INFO] Sottoscritto al topic '{self.input_topic}'.", flush=True)
 
         try:
             while self.running:
+                last_consume_time = time.time()
                 msg = self.consumer.poll(timeout=1.0)
                 if msg is None:
                     continue
@@ -196,8 +204,33 @@ class ScoringSystemApp:
         )
 
 
+def check_liveness() -> bool:
+    """Check if the service is live based on recent Kafka activity."""
+    current_time = time.time()
+    consume_recent = (current_time - last_consume_time) < 30
+    return consume_recent
+
+
+def check_readiness() -> bool:
+    """Check if the service is ready (Redis available)."""
+    if redis_client_global is None:
+        return False
+    try:
+        redis_client_global.redis_conn.ping()
+        return True
+    except Exception:
+        return False
+
+
 def main() -> None:
+    global redis_client_global
     app = ScoringSystemApp()
+    redis_client_global = app.redis_client
+    
+    # Start health probe server
+    health_server = HealthServer(liveness_check_fn=check_liveness, readiness_check_fn=check_readiness)
+    health_server.start()
+    
     try:
         print("[INFO] Avvio Scoring System...", flush=True)
         app.run()

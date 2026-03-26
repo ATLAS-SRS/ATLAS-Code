@@ -8,6 +8,7 @@ import threading
 import json
 from collections import defaultdict
 from confluent_kafka import Consumer, KafkaException
+from health_probe import HealthServer
 
 # Configuration from environment variables
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://localhost:8000/api/v1/transactions")
@@ -18,6 +19,13 @@ KAFKA_NOTIFICATION_TOPIC = os.getenv("KAFKA_NOTIFICATION_TOPIC", "transaction-no
 # Transaction tracking
 pending_transactions = {}  # Maps transaction_id to transaction details
 transaction_lock = threading.Lock()
+
+# Health check timestamps
+last_send_time = time.time()
+last_consume_time = time.time()
+
+# Global consumer thread for readiness check
+consumer_thread = None
 
 def generate_ip_address():
     """Generates a simple public IPv4 address."""
@@ -76,6 +84,7 @@ def process_notification(notification: dict) -> None:
 
 def consume_and_process_notifications():
     """Kafka consumer to process transaction notifications."""
+    global last_consume_time
     conf = {
         "bootstrap.servers": KAFKA_BROKER,
         "group.id": "client_notification_group",
@@ -87,6 +96,7 @@ def consume_and_process_notifications():
     print(f"👂 Listening for transaction notifications on topic '{KAFKA_NOTIFICATION_TOPIC}'...")
 
     while True:
+        last_consume_time = time.time()
         msg = consumer.poll(timeout=1.0)
         if msg is None:
             continue
@@ -104,8 +114,21 @@ def consume_and_process_notifications():
         except Exception as e:
             print(f"An unexpected error occurred processing notification: {e}")
 
+def check_liveness():
+    """Check if the service is live based on recent activity."""
+    current_time = time.time()
+    send_recent = (current_time - last_send_time) < (SLEEP_TIME * 5)
+    consume_recent = (current_time - last_consume_time) < 30
+    return send_recent and consume_recent
+
+def check_readiness():
+    """Check if the service is ready (consumer thread is alive)."""
+    return consumer_thread.is_alive()
+
 def send_transaction():
     """Send a transaction to the gateway."""
+    global last_send_time
+    last_send_time = time.time()
     payload = generate_transaction()
     transaction_id = payload["transaction_id"]
     
@@ -123,6 +146,7 @@ def send_transaction():
         print(f"❌ Gateway connection error: {e}")
 
 def main():
+    global consumer_thread
     print(f"🚀 Starting Client with Notification System")
     print(f"   Gateway: {GATEWAY_URL}")
     print(f"   Notification Topic: {KAFKA_NOTIFICATION_TOPIC}")
@@ -132,6 +156,10 @@ def main():
     # Start Kafka consumer in a background thread
     consumer_thread = threading.Thread(target=consume_and_process_notifications, daemon=True)
     consumer_thread.start()
+
+    # Start health probe server
+    health_server = HealthServer(liveness_check_fn=check_liveness, readiness_check_fn=check_readiness)
+    health_server.start()
 
     # Give consumer time to connect
     time.sleep(2)

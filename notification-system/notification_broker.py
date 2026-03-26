@@ -14,9 +14,11 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from health_probe import HealthServer
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +27,9 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
+
+# Health check tracking
+last_consume_time = time.time()
 
 
 class NotificationBroker:
@@ -176,12 +181,14 @@ class NotificationBroker:
 
     def run(self) -> None:
         """Start the notification broker."""
+        global last_consume_time
         self.consumer.subscribe([self.scored_topic])
         self.running = True
         logger.info(f"Subscribed to topic '{self.scored_topic}'.")
 
         try:
             while self.running:
+                last_consume_time = time.time()
                 msg = self.consumer.poll(timeout=1.0)
                 if msg is None:
                     continue
@@ -287,9 +294,28 @@ class NotificationBroker:
             )
 
 
+def check_liveness() -> bool:
+    """Check if the service is live based on recent Kafka activity."""
+    current_time = time.time()
+    consume_recent = (current_time - last_consume_time) < 30
+    return consume_recent
+
+
+def check_readiness() -> bool:
+    """Check if the service is ready to process messages."""
+    # For notification broker, readiness is always true as it's stateless
+    # and resilient to connection issues. Can add more sophisticated checks if needed.
+    return True
+
+
 def main() -> None:
     """Main entry point."""
     broker = NotificationBroker()
+    
+    # Start health probe server
+    health_server = HealthServer(liveness_check_fn=check_liveness, readiness_check_fn=check_readiness)
+    health_server.start()
+    
     try:
         logger.info("Starting Notification Broker...")
         broker.run()
