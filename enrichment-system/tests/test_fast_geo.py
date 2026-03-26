@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from evaluation_system.src.dataenrichment.fast_geoip import FastIPLocator
+from src.fast_geoip import FastIPLocator
 
 # 1. FIXTURE: Mockiamo la libreria maxminddb per non usare il file reale
 @pytest.fixture

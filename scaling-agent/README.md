@@ -6,7 +6,7 @@ An autoscaling service for the ATLAS fraud detection system with two operator-fa
 
 ## Overview
 
-The Scaling Agent monitors system metrics (CPU, memory, request rates) and automatically scales the `kafka-consumer` service based on configurable thresholds. It operates within safety boundaries and provides operational visibility.
+The Scaling Agent monitors system metrics (CPU, memory, request rates) and automatically scales the configured target service based on configurable thresholds. In the repo-level Docker Compose stack, this defaults to `enrichment-system`.
 
 When `LLM_ENABLED=true`, the daemon can consult a local model served by LM Studio through its OpenAI-compatible API. The model acts as the primary operational recommender, while the daemon still enforces cooldowns, replica guardrails, and fallback logic.
 
@@ -65,7 +65,7 @@ In `SCALING_MODE=stdio`, the agent exposes the following MCP tools:
 
 - `get_current_metrics`: Get current system and application metrics
 - `check_scaling_decision`: Analyze metrics and recommend scaling actions
-- `scale_kafka_consumer`: Scale the kafka-consumer service
+- `scale_kafka_consumer`: Scale the configured target service (tool name kept for backward compatibility)
 - `get_scaling_thresholds`: View current scaling thresholds
 - `update_scaling_thresholds`: Modify scaling thresholds
 
@@ -112,7 +112,7 @@ Environment variables:
 - `CHECK_INTERVAL_SEC`: autoscaling loop interval
 - `SCALE_COOLDOWN_SEC`: cooldown between automatic scaling actions
 - `MIN_REPLICAS` / `MAX_REPLICAS`: scaling guardrails
-- `TARGET_SERVICE`: service to scale (default: `kafka-consumer`)
+- `TARGET_SERVICE`: service to scale (repo-level default: `enrichment-system`)
 - `LLM_ENABLED`: enable LM Studio-backed reasoning
 - `LMSTUDIO_BASE_URL`: LM Studio OpenAI-compatible base URL
 - `LMSTUDIO_MODEL`: local model name exposed by LM Studio

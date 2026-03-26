@@ -70,6 +70,46 @@ curl -X POST http://localhost:8000/api/v1/transactions \
   -d '{"transaction_id": "test-123", "timestamp": "2026-03-23T10:00:00Z", "channel": "web", "transaction_type": "payment", "payment_details": {"amount": 100.0, "currency": "EUR", "payment_method": "credit_card"}, "user_id": 123}'
 ```
 
+## Load Testing with Locust
+
+Use `locustfile.py` from the repository root to stress the FastAPI gateway endpoint `/api/v1/transactions`.
+
+### Important Behavior
+- The Docker service `transaction-client` and Locust are independent traffic generators.
+- If you do not start Locust, the system still receives traffic from `transaction-client` (if running in Compose).
+- If you run both together, the gateway receives combined traffic.
+
+### Option 1: Run Locust Locally
+```bash
+# Start platform services
+docker compose up -d --build
+
+# Install Locust locally (one-time)
+pip install locust
+
+# Start Locust UI
+locust -f locustfile.py --host=http://localhost:8000
+```
+
+Open the Locust UI at `http://localhost:8089`.
+
+### Option 2: Run Locust in Docker
+```bash
+docker run --rm -it --network host -v "$PWD":/mnt/locust locustio/locust \
+  -f /mnt/locust/locustfile.py --host=http://localhost:8000
+```
+
+### Headless Example (CI-friendly)
+```bash
+locust -f locustfile.py --host=http://localhost:8000 --headless -u 100 -r 10 -t 5m
+```
+
+### Isolating Locust Metrics (without built-in client traffic)
+```bash
+# Keep all services but disable the mock transaction client
+docker compose up -d --build --scale transaction-client=0
+```
+
 ## Scaling Agent
 
 The intelligent scaling agent automatically manages container replicas based on system load:
@@ -136,7 +176,9 @@ docker compose run --rm --entrypoint pytest scaling-agent -o cache_dir=/tmp/pyte
 atlas-code/
 ├── gateway/              # API Gateway (FastAPI)
 ├── client/               # Transaction generator
-├── evaluation_system/    # Fraud detection engine
+├── enrichment-system/    # Enrichment engine
+├── scoring-system/       # Fraud scoring engine
+├── notification-system/  # Notification broker
 ├── scaling-agent/        # MCP scaling agent
 ├── monitoring/           # Prometheus config
 └── docker-compose.yml    # Orchestration
