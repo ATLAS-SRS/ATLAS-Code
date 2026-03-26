@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from scoring_system.schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
-from scoring_system.src.scoring_engine import RiskEvaluator
+from schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
+from src.scoring_engine import RiskEvaluator
 
 
 def make_transaction(**overrides):

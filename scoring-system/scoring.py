@@ -13,10 +13,10 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 from pydantic import ValidationError
 
-from scoring_system.src.health_probe import HealthServer
-from scoring_system.schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
-from scoring_system.src.redis_state import RedisStateClient
-from scoring_system.src.scoring_engine import RiskEvaluator
+from src.health_probe import HealthServer
+from schemas.scoring_dto import EnrichedTransactionInput, ScoredTransaction
+from src.redis_state import RedisStateClient
+from src.scoring_engine import RiskEvaluator
 
 # Health check tracking
 last_consume_time = time.time()

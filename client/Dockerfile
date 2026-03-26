@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia il resto del codice
 COPY client.py .
+COPY health_probe.py .
 
 # Comando di default per avviare lo script
 CMD ["python", "client.py"]

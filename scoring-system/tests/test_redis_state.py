@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from scoring_system.schemas.scoring_dto import EnrichedTransactionInput
-from scoring_system.src.redis_state import RedisStateClient
+from schemas.scoring_dto import EnrichedTransactionInput
+from src.redis_state import RedisStateClient
 
 
 class FakeRedis:

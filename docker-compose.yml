@@ -88,7 +88,7 @@ services:
     logging: *default-logging
 
   enrichment-system:
-    build: ./enrichment_system
+    build: ./enrichment-system
     container_name: enrichment_system
     environment:
       - KAFKA_BROKER=kafka:9092
@@ -105,7 +105,7 @@ services:
   scoring-system:
     build:
       context: .
-      dockerfile: ./scoring_system/Dockerfile
+      dockerfile: ./scoring-system/Dockerfile
     container_name: scoring_system
     environment:
       - KAFKA_BROKER=kafka:9092

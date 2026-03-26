@@ -29,12 +29,12 @@ services:
 
   scorer:
     image: python:3.11-slim
-    working_dir: /workspace
+    working_dir: /workspace/scoring-system
     volumes:
       - ..:/workspace
     environment:
       - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/workspace
+      - PYTHONPATH=/workspace/scoring-system
       - KAFKA_BROKER=kafka:9092
       - REDIS_HOST=redis
       - KAFKA_GROUP_ID=scoring-system-docker-test
@@ -44,8 +44,8 @@ services:
       redis:
         condition: service_healthy
     command: >-
-      bash -lc "pip install --no-cache-dir -r scoring_system/requirements.txt &&
-      python -m scoring_system.scoring"
+      bash -lc "pip install --no-cache-dir -r requirements.txt &&
+      python -m scoring"
 
   enrichment:
     image: python:3.11-slim
@@ -67,12 +67,12 @@ services:
 
   tester:
     image: python:3.11-slim
-    working_dir: /workspace
+    working_dir: /workspace/scoring-system
     volumes:
       - ..:/workspace
     environment:
       - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/workspace
+      - PYTHONPATH=/workspace/scoring-system
     depends_on:
       kafka:
         condition: service_healthy
@@ -83,6 +83,6 @@ services:
       scorer:
         condition: service_started
     command: >-
-      bash -lc "pip install --no-cache-dir -r scoring_system/requirements.txt &&
+      bash -lc "pip install --no-cache-dir -r requirements.txt &&
       sleep 12 &&
-      python scoring_system/tests/docker_integration_runner.py"
+      python tests/docker_integration_runner.py"

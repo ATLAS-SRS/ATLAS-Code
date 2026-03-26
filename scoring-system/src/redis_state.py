@@ -5,7 +5,7 @@ from typing import Any
 
 import redis
 
-from scoring_system.schemas.scoring_dto import EnrichedTransactionInput
+from schemas.scoring_dto import EnrichedTransactionInput
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
-from scoring_system.schemas.scoring_dto import EnrichedTransactionInput
+from schemas.scoring_dto import EnrichedTransactionInput
 
 
 HIGH_RISK_MCCS = {"7995", "6051"}

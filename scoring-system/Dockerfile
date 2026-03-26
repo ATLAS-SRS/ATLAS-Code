@@ -1,12 +1,12 @@
 FROM python:3.11-slim
 
-WORKDIR /workspace
+WORKDIR /app
 
-COPY scoring_system/requirements.txt /tmp/scoring_requirements.txt
-RUN pip install --no-cache-dir -r /tmp/scoring_requirements.txt
+COPY scoring-system/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY scoring-system/ .
 
-ENV PYTHONPATH=/workspace
+ENV PYTHONPATH=/app
 
-CMD ["python", "-m", "scoring_system.scoring"]
+CMD ["python", "-m", "scoring"]
