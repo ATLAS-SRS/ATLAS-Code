@@ -169,7 +169,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: scoring-system
-          image: atlas/scoring-system:latest
+          image: atlas/scoring-system:fix-readiness-2
           imagePullPolicy: IfNotPresent
           ports:
             - name: health

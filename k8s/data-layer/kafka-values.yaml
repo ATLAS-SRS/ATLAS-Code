@@ -5,12 +5,20 @@ image:
 
 kraft:
   enabled: true
+
 zookeeper:
   enabled: false
+
+controller:
+  replicaCount: 1
+  persistence:
+    size: 2Gi
+
 broker:
   replicaCount: 1
   persistence:
     size: 5Gi
+
 listeners:
   client:
     protocol: PLAINTEXT

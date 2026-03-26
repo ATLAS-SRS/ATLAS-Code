@@ -99,6 +99,42 @@ docker run --rm -it --network host -v "$PWD":/mnt/locust locustio/locust \
   -f /mnt/locust/locustfile.py --host=http://localhost:8000
 ```
 
+### Option 3: Run Locust Against Kubernetes Ingress
+Use this option when ATLAS is deployed on Kubernetes.
+
+Prerequisites:
+- NGINX Ingress Controller installed and running in the cluster
+- Ingress resource `api-gateway-ingress` applied
+- Local hosts entry mapping `fraud-api.local` to localhost:
+
+```text
+127.0.0.1 fraud-api.local
+```
+
+Run Locust against the ingress host:
+
+```bash
+locust -f locustfile.py --host=http://fraud-api.local
+```
+
+Quick verification before starting Locust:
+
+```bash
+python3 - <<'PY'
+import urllib.request
+with urllib.request.urlopen('http://fraud-api.local/health/live', timeout=3) as r:
+    print(r.status)
+    print(r.read().decode())
+PY
+```
+
+If ingress is not available yet, use temporary port-forward fallback:
+
+```bash
+kubectl port-forward -n default svc/api-gateway 8000:8000
+locust -f locustfile.py --host=http://localhost:8000
+```
+
 ### Headless Example (CI-friendly)
 ```bash
 locust -f locustfile.py --host=http://localhost:8000 --headless -u 100 -r 10 -t 5m
