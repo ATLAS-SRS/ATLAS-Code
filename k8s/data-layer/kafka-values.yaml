@@ -1,0 +1,16 @@
+image:
+  registry: docker.io
+  repository: bitnamilegacy/kafka
+  tag: "4.0.0-debian-12-r10"
+
+kraft:
+  enabled: true
+zookeeper:
+  enabled: false
+broker:
+  replicaCount: 1
+  persistence:
+    size: 5Gi
+listeners:
+  client:
+    protocol: PLAINTEXT
