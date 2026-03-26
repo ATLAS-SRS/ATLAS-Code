@@ -50,8 +50,11 @@ class NotificationBroker:
             "bootstrap.servers": self.broker_url,
             "group.id": self.group_id,
             "auto.offset.reset": "earliest",
+            "enable.auto.commit": False
         }
-        
+
+        self.last_consume_time = time.time()
+
         self.consumer = Consumer(consumer_conf)
         self.producer = Producer({"bootstrap.servers": self.broker_url})
         self.avro_deserializer = self._build_avro_deserializer()
@@ -180,15 +183,13 @@ class NotificationBroker:
             )
 
     def run(self) -> None:
-        """Start the notification broker."""
-        global last_consume_time
         self.consumer.subscribe([self.scored_topic])
         self.running = True
         logger.info(f"Subscribed to topic '{self.scored_topic}'.")
 
         try:
             while self.running:
-                last_consume_time = time.time()
+                self.last_consume_time = time.time()
                 msg = self.consumer.poll(timeout=1.0)
                 if msg is None:
                     continue
@@ -200,7 +201,13 @@ class NotificationBroker:
                     raise KafkaException(msg.error())
 
                 payload = msg.value()
-                self.process_scored_transaction(payload)
+                
+                try:
+                    self.process_scored_transaction(payload)
+                    self.consumer.commit(asynchronous=False)
+                except Exception as exc:
+                    logger.warning(f"Elaborazione fallita. Offset non committato. Retry in corso... Errore: {exc}")
+                    time.sleep(1)
         finally:
             self.close()
 
@@ -262,28 +269,21 @@ class NotificationBroker:
         notification: dict[str, Any],
     ) -> None:
         """Publish a notification to the notification topic.
-        
         Args:
             transaction_id: Transaction ID for message key
             notification: Notification payload dictionary
         """
-        try:
-            payload = json.dumps(notification)
-            self.producer.produce(
-                topic=self.notification_topic,
-                key=str(transaction_id),
-                value=payload,
-                callback=self.delivery_report,
-            )
-            self.producer.poll(0)
-        except Exception as exc:
-            logger.error(
-                f"Failed to publish notification for {transaction_id}: {exc}"
-            )
+        payload = json.dumps(notification)
+        self.producer.produce(
+            topic=self.notification_topic,
+            key=str(transaction_id),
+            value=payload,
+            callback=self.delivery_report,
+        )
+        self.producer.poll(0)
 
     def flush(self, timeout: int = 10) -> None:
         """Flush pending messages.
-        
         Args:
             timeout: Timeout in seconds
         """
@@ -294,18 +294,25 @@ class NotificationBroker:
             )
 
 
-def check_liveness() -> bool:
-    """Check if the service is live based on recent Kafka activity."""
-    current_time = time.time()
-    consume_recent = (current_time - last_consume_time) < 30
-    return consume_recent
+    def check_liveness(self) -> bool:
+            """Verifica se il loop di consumo è in esecuzione."""
+            # Assumendo che tu aggiunga self.last_consume_time = time.time() nel __init__
+            return (time.time() - self.last_consume_time) < 60
 
+    def check_readiness(self) -> bool:
+        """Verifica le dipendenze bloccanti: Consumer e Producer Kafka."""
+        try:
+            metadata_c = self.consumer.list_topics(timeout=2.0)
+            if metadata_c is None or len(metadata_c.brokers) == 0:
+                return False
+        except KafkaException:
+            return False
 
-def check_readiness() -> bool:
-    """Check if the service is ready to process messages."""
-    # For notification broker, readiness is always true as it's stateless
-    # and resilient to connection issues. Can add more sophisticated checks if needed.
-    return True
+        try:
+                self.producer.poll(0)
+        except Exception:
+                return False
+        return True
 
 
 def main() -> None:
@@ -313,7 +320,10 @@ def main() -> None:
     broker = NotificationBroker()
     
     # Start health probe server
-    health_server = HealthServer(liveness_check_fn=check_liveness, readiness_check_fn=check_readiness)
+    health_server = HealthServer(
+        liveness_check_fn=broker.check_liveness,
+        readiness_check_fn=broker.check_readiness
+    )
     health_server.start()
     
     try:

@@ -37,6 +37,7 @@ class ScoringSystemApp:
             "bootstrap.servers": broker_url,
             "group.id": group_id,
             "auto.offset.reset": "earliest",
+            "enable.auto.commit": False
         }
         self.consumer = Consumer(consumer_conf)
 
@@ -50,16 +51,16 @@ class ScoringSystemApp:
         # Schema Avro per il valore. Include i campi necessari per il DB.
         value_schema_str = """
         {
-           "namespace": "com.atlas.transactions",
-           "name": "ScoredTransactionAvro",
-           "type": "record",
-           "fields" : [
-             { "name" : "transaction_id", "type" : "string" },
-             { "name" : "timestamp", "type" : { "type": "long", "logicalType": "timestamp-millis" } },
-             { "name" : "risk_score", "type" : "int" },
-             { "name" : "risk_level", "type" : "string" },
-             { "name" : "payload", "type" : "string" }
-           ]
+            "namespace": "com.atlas.transactions",
+            "name": "ScoredTransactionAvro",
+            "type": "record",
+            "fields" : [
+                { "name" : "transaction_id", "type" : "string" },
+                { "name" : "timestamp", "type" : { "type": "long", "logicalType": "timestamp-millis" } },
+                { "name" : "risk_score", "type" : "int" },
+                { "name" : "risk_level", "type" : "string" },
+                { "name" : "payload", "type" : "string" }
+            ]
         }
         """
         value_serializer = AvroSerializer(
@@ -113,7 +114,17 @@ class ScoringSystemApp:
                     raise KafkaException(msg.error())
 
                 payload = msg.value().decode("utf-8")
-                self.process_message(payload)
+                
+                try:
+                    # Se process_message solleva un'eccezione, salta il commit
+                    self.process_message(payload)
+                    self.consumer.commit(asynchronous=False)
+                except Exception as exc:
+                    exc_str = str(exc)
+                    # Silenzia il warning se si tratta di puro wait infrastrutturale
+                    if "Connection refused" not in exc_str and "_VALUE_SERIALIZATION" not in exc_str:
+                        print(f"[WARN] Elaborazione fallita. Offset non committato. Retry in corso... Dettaglio: {exc}", file=sys.stderr, flush=True)
+                    time.sleep(1) # Backoff
         finally:
             self.close()
 
@@ -129,52 +140,42 @@ class ScoringSystemApp:
         try:
             incoming = EnrichedTransactionInput.model_validate_json(message)
         except ValidationError as exc:
+            # I payload malformati vengono scartati definitivamente. Non ha senso riprovare.
             print(f"[WARN] Transazione scartata per schema non valido:\n{exc}", file=sys.stderr, flush=True)
             return
 
-        user_profile: dict[str, Any] | None = None
-        redis_available = True
+        # 1. Lettura da Redis (Hard Dependency)
         try:
             user_profile = self.redis_client.get_user_profile(incoming.user_id)
         except (redis.TimeoutError, redis.ConnectionError) as exc:
-            redis_available = False
-            print(
-                f"[WARN] Redis temporaneamente non disponibile in lettura, applico solo regole stateless: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
+            print(f"[ERROR] Impossibile recuperare il profilo utente da Redis: {exc}", file=sys.stderr, flush=True)
+            raise  # Interrompe il flusso: l'offset non verrà committato
 
+        # 2. Calcolo dello Score
         try:
             result = self.evaluator.evaluate(
                 transaction=incoming,
-                user_profile=user_profile if redis_available else None,
+                user_profile=user_profile,
             )
         except Exception as exc:
             print(f"[ERROR] Errore durante il calcolo del rischio: {exc}", file=sys.stderr, flush=True)
-            return
+            raise
 
-        if redis_available:
-            try:
-                self.redis_client.update_user_profile(incoming.user_id, incoming, result.score)
-            except (redis.TimeoutError, redis.ConnectionError) as exc:
-                print(
-                    f"[WARN] Redis temporaneamente non disponibile in scrittura, stato non aggiornato: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        # 3. Aggiornamento Redis (Hard Dependency)
+        try:
+            self.redis_client.update_user_profile(incoming.user_id, incoming, result.score)
+        except (redis.TimeoutError, redis.ConnectionError) as exc:
+            print(f"[ERROR] Impossibile aggiornare il profilo su Redis: {exc}", file=sys.stderr, flush=True)
+            raise
 
-        # Crea il DTO finale
+        # 4. Creazione del DTO per Avro
         scored_transaction = ScoredTransaction(
             **incoming.model_dump(),
             risk_score=result.score,
             risk_level=result.level,
         )
 
-        # 1. Serializziamo l'intero oggetto `ScoredTransaction` in una stringa JSON.
-        #    Questo sarà il contenuto del campo 'payload' del nostro record Avro.
         full_payload_as_json_string = scored_transaction.model_dump_json(by_alias=True)
-
-        # 2. Creiamo il dizionario che corrisponde allo schema Avro del valore.
         avro_value = {
             "transaction_id": scored_transaction.transaction_id,
             "timestamp": int(scored_transaction.timestamp.timestamp() * 1000),
@@ -183,8 +184,7 @@ class ScoringSystemApp:
             "payload": full_payload_as_json_string,
         }
 
-        print(f"[INFO] Transazione valutata: ID={incoming.transaction_id} Score={result.score} Level={result.level}", flush=True)
-
+        # 5. Pubblicazione su Kafka
         try:
             self.producer.produce(
                 topic=self.output_topic,
@@ -194,8 +194,13 @@ class ScoringSystemApp:
             )
             self.producer.poll(0)
         except Exception as exc:
-            print(f"[ERROR] Errore durante la pubblicazione Kafka: {exc}", file=sys.stderr, flush=True)
-            return
+            exc_str = str(exc)
+            # Identifica l'errore specifico dello Schema Registry offline
+            if "Connection refused" in exc_str or "_VALUE_SERIALIZATION" in exc_str:
+                print(f"[INFO] Infrastruttura non ancora pronta (Schema Registry offline). In attesa...", flush=True)
+            else:
+                print(f"[ERROR] Errore imprevisto durante la pubblicazione Kafka: {exc}", file=sys.stderr, flush=True)
+            raise  # Rilancia l'eccezione per impedire il commit dell'offset
         
         print(
             f"[NOTIFICATION] Transazione {incoming.transaction_id} processata. "
@@ -203,32 +208,46 @@ class ScoringSystemApp:
             flush=True,
         )
 
+    def check_liveness(self) -> bool:
+        """Verifica se il loop di consumo è in esecuzione."""
+        current_time = time.time()
+        # Usa la variabile globale come hai fatto, oppure rendila attributo di classe self.last_consume_time
+        return (current_time - self.last_consume_time) < 60
 
-def check_liveness() -> bool:
-    """Check if the service is live based on recent Kafka activity."""
-    current_time = time.time()
-    consume_recent = (current_time - last_consume_time) < 30
-    return consume_recent
+    def check_readiness(self) -> bool:
+        """Verifica le dipendenze bloccanti: Kafka (Consumer/Producer) e Redis."""
+        # 1. Verifica Kafka Consumer
+        try:
+            metadata_c = self.consumer.list_topics(timeout=2.0)
+            if metadata_c is None or len(metadata_c.brokers) == 0:
+                return False
+        except KafkaException:
+            return False
 
+        # 2. Verifica Kafka Producer
+        try:
+            self.producer.poll(0)
+        except Exception:
+            return False
 
-def check_readiness() -> bool:
-    """Check if the service is ready (Redis available)."""
-    if redis_client_global is None:
-        return False
-    try:
-        redis_client_global.redis_conn.ping()
+        # 3. Verifica Redis
+        try:
+            if not self.redis_client.redis_conn.ping():
+                return False
+        except Exception:
+            return False
+            
         return True
-    except Exception:
-        return False
-
 
 def main() -> None:
-    global redis_client_global
     app = ScoringSystemApp()
-    redis_client_global = app.redis_client
     
-    # Start health probe server
-    health_server = HealthServer(liveness_check_fn=check_liveness, readiness_check_fn=check_readiness)
+    # Istanzia e avvia health probe server agganciandolo ai metodi di classe
+    health_server = HealthServer(
+        port=8080, 
+        liveness_check_fn=app.check_liveness, 
+        readiness_check_fn=app.check_readiness
+    )
     health_server.start()
     
     try:
@@ -240,7 +259,8 @@ def main() -> None:
     except Exception as exc:
         print(f"[FATAL] Arresto anomalo dello scoring system: {exc}", file=sys.stderr, flush=True)
         raise
-
+    finally:
+        health_server.stop()
 
 if __name__ == "__main__":
     main()
