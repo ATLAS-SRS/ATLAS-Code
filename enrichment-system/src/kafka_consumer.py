@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import argparse
+import time
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 class TransactionConsumer:
@@ -12,11 +13,14 @@ class TransactionConsumer:
         conf = {
             'bootstrap.servers': broker_url, 
             'group.id': group_id,
-            'auto.offset.reset': auto_offset
+            'auto.offset.reset': auto_offset,
+            'enable.auto.commit': False
         }
+
         self.topic = topic
         self.consumer = Consumer(conf)
         self.running = False
+        self.last_poll_timestamp = time.time()
 
     def start(self, callback_func):
         """
@@ -29,6 +33,7 @@ class TransactionConsumer:
 
         try:
             while self.running:
+                self.last_poll_timestamp = time.time()
                 msg = self.consumer.poll(timeout=1.0)
 
                 if msg is None:
@@ -46,6 +51,7 @@ class TransactionConsumer:
                     # Delega l'elaborazione del messaggio alla funzione esterna
                     valore_msg = msg.value().decode('utf-8')
                     callback_func(valore_msg)
+                    self.consumer.commit(asynchronous=False)
         finally:
             self.close()
 
@@ -57,6 +63,15 @@ class TransactionConsumer:
         """Rilascia le risorse del consumer."""
         self.consumer.close()
         print("[DEBUG] Consumer chiuso correttamente.")
+
+    def is_connected(self) -> bool:
+        """Verifica se il consumer è in grado di comunicare con il broker Kafka."""
+        try:
+            metadata = self.consumer.list_topics(timeout=2.0)
+            return metadata is not None and len(metadata.brokers) > 0
+        except KafkaException as e:
+            print(f"[ERROR] Readiness check fallito con eccezione: {e}", file=sys.stderr)
+            return False
 
 # --- SEZIONE STANDALONE ---
 
