@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
 PLT_LAYER_DIR="${SCRIPT_DIR}/k8s/plt-layer"
 APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
+SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
 
 usage() {
   cat <<'EOF'
@@ -138,6 +140,7 @@ build_images() {
   docker build -t atlas/enrichment-system:latest -f enrichment-system/Dockerfile enrichment-system/
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
+  docker build -t atlas/scaling-agent:latest -f scaling-agent/Dockerfile scaling-agent/
 
   log "Docker images built successfully"
 }
@@ -192,11 +195,23 @@ deploy_app_layer() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
 
+  if [[ -f "$SERVICEMONITORS_MANIFEST" ]]; then
+    kubectl apply -n "$NAMESPACE" -f "$SERVICEMONITORS_MANIFEST"
+  fi
+
   log "Waiting for app rollouts"
   rollout_or_debug deployment api-gateway "app.kubernetes.io/name=api-gateway"
   rollout_or_debug deployment enrichment-system "app.kubernetes.io/name=enrichment-system"
   rollout_or_debug deployment scoring-system "app.kubernetes.io/name=scoring-system"
   rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
+
+  if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
+    log "Deploying scaling-agent"
+    kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
+    rollout_or_debug deployment scaling-agent "app=scaling-agent"
+  else
+    log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
+  fi
 
   log "App layer deployed"
 }
@@ -293,6 +308,7 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/enrichment-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/scoring-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
+  kubectl logs -n ${NAMESPACE} deploy/scaling-agent --tail=100
 
 Locust Load Testing:
   kubectl port-forward svc/locust-master-ui 8089:8089 -n ${NAMESPACE}
