@@ -3,6 +3,7 @@ set -euo pipefail
 
 NAMESPACE="default"
 SKIP_DATA_LAYER=false
+SKIP_PLT=false
 SKIP_APP_LAYER=false
 SKIP_LOCUST=false
 WAIT_TIMEOUT="300s"
@@ -11,6 +12,7 @@ BUILD_IMAGES=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
+PLT_LAYER_DIR="${SCRIPT_DIR}/k8s/plt-layer"
 APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
 
 usage() {
@@ -21,6 +23,7 @@ Options:
   -n, --namespace <name>   Kubernetes namespace (default: default)
       --build              Build Docker images before deployment
       --skip-data-layer    Do not install/upgrade Kafka, Redis, Schema Registry
+      --skip-plt           Do not install/upgrade Prometheus, Loki, Grafana
       --skip-app-layer     Do not deploy compute layer manifests
       --skip-locust        Do not deploy Locust manifests
       --wait-timeout <d>   Rollout timeout, e.g. 300s (default: 300s)
@@ -31,6 +34,7 @@ Examples:
   ./deploy.sh
   ./deploy.sh --namespace fraud-detection
   ./deploy.sh --skip-data-layer
+  ./deploy.sh --skip-plt
   ./deploy.sh --skip-locust
 EOF
 }
@@ -59,6 +63,10 @@ parse_args() {
         ;;
       --skip-data-layer)
         SKIP_DATA_LAYER=true
+        shift
+        ;;
+      --skip-plt)
+        SKIP_PLT=true
         shift
         ;;
       --skip-app-layer)
@@ -167,6 +175,32 @@ deploy_app_layer() {
   log "App layer deployed"
 }
 
+deploy_plt() {
+  log "Deploying PLT Stack (Prometheus, Loki, Grafana)"
+
+  require_cmd helm
+
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo update >/dev/null
+
+  helm upgrade --install atlas-loki grafana/loki-stack \
+    --namespace "$NAMESPACE" \
+    --create-namespace
+
+  helm upgrade --install atlas-monitoring prometheus-community/kube-prometheus-stack \
+    --namespace "$NAMESPACE" \
+    --create-namespace \
+    -f "${PLT_LAYER_DIR}/grafana-values.yaml" \
+    -f "${PLT_LAYER_DIR}/prometheus-values.yaml"
+
+  log "Waiting for PLT rollouts"
+  kubectl rollout status deploy/atlas-monitoring-grafana -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  kubectl rollout status statefulset/prometheus-atlas-monitoring-kube-prometheus-prometheus -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+  log "PLT stack deployed"
+}
+
 deploy_ingress_controller() {
   log "Setting up NGINX Ingress Controller"
 
@@ -245,6 +279,12 @@ main() {
     deploy_data_layer
   else
     log "Skipping data layer deployment"
+  fi
+
+  if [[ "$SKIP_PLT" == false ]]; then
+    deploy_plt
+  else
+    log "Skipping PLT deployment"
   fi
 
   if [[ "$SKIP_APP_LAYER" == false ]]; then
