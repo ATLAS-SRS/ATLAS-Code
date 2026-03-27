@@ -72,7 +72,7 @@ curl -X POST http://localhost:8000/api/v1/transactions \
 
 ## Load Testing with Locust
 
-Use `locustfile.py` from the repository root to stress the FastAPI gateway endpoint `/api/v1/transactions`.
+Use `locust/locustfile.py` to stress the FastAPI gateway endpoint `/api/v1/transactions`.
 
 ### Important Behavior
 - The Docker service `transaction-client` and Locust are independent traffic generators.
@@ -88,7 +88,7 @@ docker compose up -d --build
 pip install locust
 
 # Start Locust UI
-locust -f locustfile.py --host=http://localhost:8000
+locust -f locust/locustfile.py --host=http://localhost:8000
 ```
 
 Open the Locust UI at `http://localhost:8089`.
@@ -96,7 +96,7 @@ Open the Locust UI at `http://localhost:8089`.
 ### Option 2: Run Locust in Docker
 ```bash
 docker run --rm -it --network host -v "$PWD":/mnt/locust locustio/locust \
-  -f /mnt/locust/locustfile.py --host=http://localhost:8000
+  -f /mnt/locust/locust/locustfile.py --host=http://localhost:8000
 ```
 
 ### Option 3: Run Locust Against Kubernetes Ingress
@@ -114,7 +114,7 @@ Prerequisites:
 Run Locust against the ingress host:
 
 ```bash
-locust -f locustfile.py --host=http://fraud-api.local
+locust -f locust/locustfile.py --host=http://fraud-api.local
 ```
 
 Quick verification before starting Locust:
@@ -132,12 +132,12 @@ If ingress is not available yet, use temporary port-forward fallback:
 
 ```bash
 kubectl port-forward -n default svc/api-gateway 8000:8000
-locust -f locustfile.py --host=http://localhost:8000
+locust -f locust/locustfile.py --host=http://localhost:8000
 ```
 
 ### Headless Example (CI-friendly)
 ```bash
-locust -f locustfile.py --host=http://localhost:8000 --headless -u 100 -r 10 -t 5m
+locust -f locust/locustfile.py --host=http://localhost:8000 --headless -u 100 -r 10 -t 5m
 ```
 
 ### Isolating Locust Metrics (without built-in client traffic)

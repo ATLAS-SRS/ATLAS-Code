@@ -217,6 +217,82 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: locust-master
+  labels:
+    app.kubernetes.io/name: locust-master
+    app.kubernetes.io/part-of: fraud-detection
+    app.kubernetes.io/component: compute-layer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: locust-master
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: locust-master
+        app.kubernetes.io/part-of: fraud-detection
+        app.kubernetes.io/component: compute-layer
+    spec:
+      containers:
+        - name: locust-master
+          image: locustio/locust:latest
+          imagePullPolicy: IfNotPresent
+          command: ["locust", "-f", "/mnt/locust/locustfile.py", "--master"]
+          ports:
+            - name: web-ui
+              containerPort: 8089
+            - name: worker-comm
+              containerPort: 5557
+          volumeMounts:
+            - name: locust-script
+              mountPath: /mnt/locust
+              readOnly: true
+      volumes:
+        - name: locust-script
+          configMap:
+            name: locust-script
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust-worker
+  labels:
+    app.kubernetes.io/name: locust-worker
+    app.kubernetes.io/part-of: fraud-detection
+    app.kubernetes.io/component: compute-layer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: locust-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: locust-worker
+        app.kubernetes.io/part-of: fraud-detection
+        app.kubernetes.io/component: compute-layer
+    spec:
+      containers:
+        - name: locust-worker
+          image: locustio/locust:latest
+          imagePullPolicy: IfNotPresent
+          command: ["locust", "-f", "/mnt/locust/locustfile.py", "--worker"]
+          env:
+            - name: LOCUST_MASTER_NODE_HOST
+              value: locust-master
+          volumeMounts:
+            - name: locust-script
+              mountPath: /mnt/locust
+              readOnly: true
+      volumes:
+        - name: locust-script
+          configMap:
+            name: locust-script
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: notification-system
   labels:
     app.kubernetes.io/name: notification-system

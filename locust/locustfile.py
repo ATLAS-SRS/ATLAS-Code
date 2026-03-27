@@ -1,0 +1,103 @@
+import random
+import uuid
+from datetime import datetime, timezone
+from locust import HttpUser, task, between, events
+
+# ============================================================================
+# DATI STATICI E STATO IN-MEMORY
+# ============================================================================
+
+# Simuliamo un database di utenti con le loro abitudini fisse (es. IP base)
+USER_BASE = {
+    "101": {"base_ip": "82.54.12.99", "country": "IT", "typical_amount": 50},
+    "102": {"base_ip": "151.22.33.44", "country": "IT", "typical_amount": 120},
+    "103": {"base_ip": "91.10.20.30", "country": "FR", "typical_amount": 15},
+    "104": {"base_ip": "80.11.22.33", "country": "DE", "typical_amount": 300},
+}
+
+BLACKLISTED_METHODS = [
+    "credit_card_4444",
+    "paypal_stolen_account",
+    "apple_pay_blocked_device"
+]
+
+FRAUD_IPS = ["185.10.20.30", "203.45.67.89"] # IP associati a VPN o paesi ad alto rischio
+
+# ============================================================================
+# CLASSE UTENTE CON SCENARI PESATI
+# ============================================================================
+
+class FraudTesterUser(HttpUser):
+    wait_time = between(0.5, 2.0)
+
+    def _send_payload(self, payload, scenario_name):
+        """Invia il payload e mappa il nome dello scenario nelle metriche di Locust."""
+        with self.client.post(
+            "/api/v1/transactions",
+            json=payload,
+            name=f"POST /transactions ({scenario_name})", # Divide le metriche nella UI
+            catch_response=True,
+            timeout=5,
+        ) as response:
+            if response.status_code == 202:
+                response.success()
+            else:
+                response.failure(f"Errore {response.status_code}: {response.text}")
+
+    @task(85) # L'85% del traffico sarà normale
+    def legit_transaction(self):
+        user_id = random.choice(list(USER_BASE.keys()))
+        user_profile = USER_BASE[user_id]
+
+        payload = {
+            "transaction_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "channel": random.choice(["web", "mobile", "pos"]),
+            "transaction_type": "payment",
+            "payment_details": {
+                # Variazione normale del prezzo tipico dell'utente
+                "amount": round(user_profile["typical_amount"] * random.uniform(0.8, 1.2), 2),
+                "currency": "EUR",
+                "payment_method": "credit_card",
+            },
+            "ip_address": user_profile["base_ip"], # Usa sempre l'IP abituale
+            "user_id": int(user_id),
+        }
+        self._send_payload(payload, "Legit Traffic")
+
+    @task(10) # 10% del traffico: Frode Blacklist
+    def blacklist_fraud(self):
+        payload = {
+            "transaction_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "channel": "web",
+            "transaction_type": "payment",
+            "payment_details": {
+                "amount": round(random.uniform(500.0, 1000.0), 2),
+                "currency": "EUR",
+                "payment_method": random.choice(BLACKLISTED_METHODS), # Peschiamo dalla Blacklist
+            },
+            "ip_address": random.choice(FRAUD_IPS),
+            "user_id": random.randint(9000, 9999), # Utente sconosciuto
+        }
+        self._send_payload(payload, "Fraud: Blacklist")
+
+    @task(5) # 5% del traffico: Impossible Travel
+    def impossible_travel_fraud(self):
+        # Prendiamo un utente noto che di solito compra dall'Italia
+        user_id = "101"
+
+        payload = {
+            "transaction_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "channel": "mobile",
+            "transaction_type": "payment",
+            "payment_details": {
+                "amount": 850.00, # Importo anomalo per lui
+                "currency": "EUR",
+                "payment_method": "credit_card",
+            },
+            "ip_address": random.choice(FRAUD_IPS), # IP radicalmente diverso da quello base
+            "user_id": int(user_id),
+        }
+        self._send_payload(payload, "Fraud: Impossible Travel")

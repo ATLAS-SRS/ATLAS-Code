@@ -4,6 +4,7 @@ set -euo pipefail
 NAMESPACE="default"
 SKIP_DATA_LAYER=false
 SKIP_APP_LAYER=false
+SKIP_LOCUST=false
 WAIT_TIMEOUT="300s"
 IMMUTABLE_RECOVERY=true
 BUILD_IMAGES=false
@@ -21,6 +22,7 @@ Options:
       --build              Build Docker images before deployment
       --skip-data-layer    Do not install/upgrade Kafka, Redis, Schema Registry
       --skip-app-layer     Do not deploy compute layer manifests
+      --skip-locust        Do not deploy Locust manifests
       --wait-timeout <d>   Rollout timeout, e.g. 300s (default: 300s)
       --no-immutable-recovery  Disable automatic Kafka StatefulSet immutable field recovery
   -h, --help               Show this help
@@ -29,6 +31,7 @@ Examples:
   ./deploy.sh
   ./deploy.sh --namespace fraud-detection
   ./deploy.sh --skip-data-layer
+  ./deploy.sh --skip-locust
 EOF
 }
 
@@ -60,6 +63,10 @@ parse_args() {
         ;;
       --skip-app-layer)
         SKIP_APP_LAYER=true
+        shift
+        ;;
+      --skip-locust)
+        SKIP_LOCUST=true
         shift
         ;;
       --wait-timeout)
@@ -160,6 +167,20 @@ deploy_app_layer() {
   log "App layer deployed"
 }
 
+deploy_locust() {
+  log "Deploying Locust manifests"
+
+  kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/locust-configmap.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
+
+  log "Waiting for Locust rollouts"
+  kubectl rollout status deploy/locust-master -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  kubectl rollout status deploy/locust-worker -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+  log "Locust deployed"
+}
+
 print_summary() {
   log "Deployment summary"
   kubectl get pods -n "$NAMESPACE" -o wide
@@ -176,6 +197,10 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/enrichment-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/scoring-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
+
+Locust Load Testing:
+  kubectl port-forward svc/locust-master-ui 8089:8089 -n ${NAMESPACE}
+  http://localhost:8089
 EOF
 }
 
@@ -208,6 +233,12 @@ main() {
     deploy_app_layer
   else
     log "Skipping app layer deployment"
+  fi
+
+  if [[ "$SKIP_LOCUST" == false ]]; then
+    deploy_locust
+  else
+    log "Skipping Locust deployment"
   fi
 
   print_summary
