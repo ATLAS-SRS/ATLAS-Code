@@ -11,22 +11,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import logging
 import os
-import sys
 import time
 from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from health_probe import HealthServer
+from structured_logger import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] %(message)s',
-    stream=sys.stdout
-)
-logger = logging.getLogger(__name__)
+logger = get_logger("notification-system")
 
 # Health check tracking
 last_consume_time = time.time()
@@ -61,9 +54,12 @@ class NotificationBroker:
         self.running = False
 
         logger.info(
-            f"Notification Broker initialized. "
-            f"Input={self.scored_topic} Output={self.notification_topic} "
-            f"SchemaRegistry={self.schema_registry_url}"
+            "Notification broker initialized",
+            extra={
+                "input_topic": self.scored_topic,
+                "output_topic": self.notification_topic,
+                "schema_registry": self.schema_registry_url,
+            },
         )
 
     def _build_avro_deserializer(self) -> Any | None:
@@ -73,9 +69,8 @@ class NotificationBroker:
             from confluent_kafka.schema_registry.avro import AvroDeserializer
         except ImportError as exc:
             logger.warning(
-                "Avro support is unavailable because schema registry dependencies "
-                "are missing: %s",
-                exc,
+                "Avro support is unavailable because schema registry dependencies are missing",
+                extra={"error": str(exc)},
             )
             return None
 
@@ -85,7 +80,7 @@ class NotificationBroker:
             )
             return AvroDeserializer(schema_registry_client)
         except Exception as exc:
-            logger.warning("Failed to initialize Avro deserializer: %s", exc)
+            logger.warning("Failed to initialize Avro deserializer", extra={"error": str(exc)})
             return None
 
     def _decode_scored_transaction(
@@ -127,7 +122,7 @@ class NotificationBroker:
                 SerializationContext(self.scored_topic, MessageField.VALUE),
             )
         except Exception as exc:
-            logger.debug("Avro decode failed, falling back to JSON: %s", exc)
+            logger.info("Avro decode failed, falling back to JSON", extra={"error": str(exc)})
             return None
 
         if isinstance(decoded, dict):
@@ -175,17 +170,17 @@ class NotificationBroker:
     def delivery_report(err: KafkaError | None, msg: Any) -> None:
         """Report on message delivery status."""
         if err is not None:
-            logger.error(f"Message delivery failed: {err}")
+            logger.error("Notification delivery failed", extra={"error": str(err)})
         else:
             logger.debug(
-                f"Notification delivered to partition {msg.partition()} "
-                f"at offset {msg.offset()}"
+                "Notification delivered",
+                extra={"partition": msg.partition(), "offset": msg.offset()},
             )
 
     def run(self) -> None:
         self.consumer.subscribe([self.scored_topic])
         self.running = True
-        logger.info(f"Subscribed to topic '{self.scored_topic}'.")
+        logger.info("Subscribed to Kafka topic", extra={"topic": self.scored_topic})
 
         try:
             while self.running:
@@ -206,7 +201,10 @@ class NotificationBroker:
                     self.process_scored_transaction(payload)
                     self.consumer.commit(asynchronous=False)
                 except Exception as exc:
-                    logger.warning(f"Elaborazione fallita. Offset non committato. Retry in corso... Errore: {exc}")
+                    logger.warning(
+                        "Processing failed. Offset not committed. Retrying",
+                        extra={"error": str(exc)},
+                    )
                     time.sleep(1)
         finally:
             self.close()
@@ -252,16 +250,20 @@ class NotificationBroker:
             self._publish_notification(transaction_id, notification)
             
             logger.info(
-                f"Transaction {transaction_id[:8]}... processed. "
-                f"Score: {risk_score}, Level: {risk_level}"
+                "Transaction processed",
+                extra={
+                    "transaction_id": transaction_id,
+                    "risk_score": risk_score,
+                    "risk_level": risk_level,
+                },
             )
 
         except (ValueError, TypeError) as exc:
-            logger.error(f"Failed to decode scored transaction: {exc}")
+            logger.error("Failed to decode scored transaction", extra={"error": str(exc)})
         except KeyError as exc:
-            logger.error(f"Missing required field in scored transaction: {exc}")
+            logger.error("Missing required field in scored transaction", extra={"error": str(exc)})
         except Exception as exc:
-            logger.error(f"Unexpected error processing transaction: {exc}")
+            logger.error("Unexpected error processing transaction", extra={"error": str(exc)})
 
     def _publish_notification(
         self,
@@ -333,7 +335,7 @@ def main() -> None:
         logger.info("Shutting down Notification Broker...")
         broker.stop()
     except Exception as exc:
-        logger.critical(f"Fatal error: {exc}")
+        logger.critical("Fatal notification broker error", extra={"error": str(exc)})
         raise
 
 

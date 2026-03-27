@@ -12,9 +12,11 @@ import os
 import time
 
 import requests
+from structured_logger import get_logger
 
 SCALING_AGENT_URL = os.getenv("SCALING_AGENT_URL", "http://localhost:8001")
 CHECK_INTERVAL_SEC = int(os.getenv("CHECK_INTERVAL_SEC", "10"))
+logger = get_logger("scaling-agent-diagnostic")
 
 
 def get_json(path: str) -> dict:
@@ -27,19 +29,20 @@ def print_snapshot() -> None:
     health = get_json("/healthz")
     decision = get_json("/decision")
 
-    print(json.dumps({"health": health, "decision": decision}, indent=2))
+    logger.info("Scaling snapshot", extra={"health": health, "decision": decision})
 
 
 def main() -> None:
-    print("ATLAS scaling daemon diagnostic watcher")
-    print(f"Target: {SCALING_AGENT_URL}")
-    print(f"Polling every {CHECK_INTERVAL_SEC} seconds")
+    logger.info(
+        "Starting scaling daemon diagnostic watcher",
+        extra={"target": SCALING_AGENT_URL, "polling_seconds": CHECK_INTERVAL_SEC},
+    )
 
     while True:
         try:
             print_snapshot()
         except Exception as exc:
-            print(f"Error talking to scaling daemon: {exc}")
+            logger.error("Error talking to scaling daemon", extra={"error": str(exc)})
         time.sleep(CHECK_INTERVAL_SEC)
 
 

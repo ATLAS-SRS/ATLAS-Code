@@ -10,7 +10,6 @@ This module supports two operating modes:
 import asyncio
 from collections import deque
 import json
-import logging
 import os
 import subprocess
 import time
@@ -30,13 +29,11 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from prometheus_client import Gauge, REGISTRY, start_http_server
 from pydantic import BaseModel
+from structured_logger import get_logger
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
-LOGGER = logging.getLogger("atlas.scaling")
+LOGGER = get_logger("scaling-agent")
+LOGGER.setLevel(LOG_LEVEL)
 
 CRITICAL_RISK_KEYWORDS = (
     "critical",

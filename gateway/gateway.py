@@ -8,6 +8,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from structured_logger import get_logger
 
 # --- 1. CONFIGURAZIONE KAFKA ---
 # Leggiamo l'indirizzo dal docker-compose.yml. Se non c'è, usiamo localhost
@@ -16,6 +17,7 @@ KAFKA_TOPIC = "raw-transactions"
 producer: AIOKafkaProducer = None
 kafka_connected: bool = False
 connection_task: asyncio.Task = None
+logger = get_logger("gateway")
 
 async def _kafka_connection_task():
     global kafka_connected
@@ -24,13 +26,16 @@ async def _kafka_connection_task():
             try:
                 await producer.start()
                 kafka_connected = True
-                print("✅ Connessione a Kafka stabilita in background.")
+                logger.info("Kafka connection established in background")
                 break
             except Exception as e:
-                print(f"⚠️ Impossibile connettersi a Kafka. Riprovo in 5 secondi... Errore: {e}")
+                logger.warning(
+                    "Unable to connect to Kafka. Retrying in 5 seconds",
+                    extra={"error": str(e), "retry_in_seconds": 5},
+                )
                 await asyncio.sleep(5)
     except asyncio.CancelledError:
-        print("⚠️ Task di connessione a Kafka annullato durante lo spegnimento.")
+        logger.warning("Kafka connection task cancelled during shutdown")
 
 # --- 2. CICLO DI VITA DELL'APP (Startup e Shutdown) ---
 @asynccontextmanager
@@ -49,7 +54,7 @@ async def lifespan(app: FastAPI):
             pass
     if kafka_connected:
         await producer.stop()
-        print("🛑 Connessione a Kafka chiusa.")
+        logger.info("Kafka connection closed")
 
 # --- 3. CONFIGURAZIONE RATE LIMITER ---
 # Usa l'IP del client per limitare le richieste (es. max 10 al minuto per IP)
@@ -94,7 +99,10 @@ async def ingest_transaction(request: Request, transaction: Transaction):
         # 2. Pattern Event-Driven: pubblichiamo su Kafka in modo asincrono
         await producer.send_and_wait(KAFKA_TOPIC, payload)
         
-        print(f"🚀 Transazione {transaction.transaction_id} inviata con successo a Kafka!")
+        logger.info(
+            "Transaction successfully sent to Kafka",
+            extra={"transaction_id": transaction.transaction_id},
+        )
         
         # 3. Rispondiamo al client rapidamente
         return {"status": "accepted", "transaction_id": transaction.transaction_id}
@@ -103,7 +111,10 @@ async def ingest_transaction(request: Request, transaction: Transaction):
         # Pattern Circuit Breaker / Graceful Degradation:
         # Se Kafka è giù, evitiamo che l'app crashi e ritorniamo 503.
         # L'Agente leggerà questo errore tramite l'endpoint /metrics.
-        print(f"❌ Errore di invio a Kafka: {e}")
+        logger.error(
+            "Failed to send transaction to Kafka",
+            extra={"error": str(e), "transaction_id": transaction.transaction_id},
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
             detail="Servizio di accodamento temporaneamente non disponibile."

@@ -13,6 +13,10 @@ from src.kafka_consumer import TransactionConsumer
 from src.health_probe import HealthServer
 from src.fast_geoip import FastIPLocator
 from schemas import TransactionInput, EnrichedTransaction
+from structured_logger import get_logger
+
+
+logger = get_logger("enrichment-system")
 
 
 def build_enriched_payload(
@@ -40,9 +44,9 @@ class EnrichmentSystem:
     def __init__(self):
         try:
             self.geo_locator = FastIPLocator()
-            print("[INFO] GeoIP Locator inizializzato.", flush=True)
+            logger.info("GeoIP locator initialized")
         except FileNotFoundError as e:
-            print(f"[FATAL] {e}", file=sys.stderr)
+            logger.critical("GeoIP database initialization failed", extra={"error": str(e)})
             sys.exit(1)
 
         broker_url = os.getenv('KAFKA_BROKER', 'localhost:9092')
@@ -58,7 +62,7 @@ class EnrichmentSystem:
 
         # Inizializzazione del Producer Kafka
         self.producer = Producer({'bootstrap.servers': broker_url})
-        print(f"[INFO] Kafka Producer inizializzato per il broker {broker_url}", flush=True)
+        logger.info("Kafka producer initialized", extra={"broker": broker_url})
 
         # Istanzia il server per le probe, passando i metodi di controllo
         self.health_server = HealthServer(
@@ -71,7 +75,7 @@ class EnrichmentSystem:
     def delivery_report(err, msg):
         """Callback eseguita alla ricezione dell'ack da parte di Kafka."""
         if err is not None:
-            print(f"[ERROR] Message delivery failed: {err}", file=sys.stderr)
+            logger.error("Kafka message delivery failed", extra={"error": str(err)})
 
     def process_transaction(self, message: str):
         """Callback eseguita per ogni messaggio da Kafka."""
@@ -93,7 +97,13 @@ class EnrichmentSystem:
 
             # 4. Serializzazione
             final_payload = enriched_tx.model_dump_json(by_alias=True)
-            print(f"[EVALUATION] Transazione arricchita: {final_payload}", flush=True)
+            logger.info(
+                "Transaction enriched",
+                extra={
+                    "transaction_id": str(incoming_data.transaction_id),
+                    "enriched_payload": final_payload,
+                },
+            )
             
             # 5. Inoltro del final_payload al topic Kafka successivo
             self.producer.produce(
@@ -106,15 +116,15 @@ class EnrichmentSystem:
 
         except ValidationError as e:
             # Catturiamo i messaggi malformati alla radice
-            print(f"[WARN] Transazione scartata. Errore di schema:\n{e}", file=sys.stderr)
+            logger.warning("Transaction discarded due to schema validation error", extra={"error": str(e)})
         except Exception as e:
-            print(f"[ERROR] Errore imprevisto durante l'elaborazione: {e}", file=sys.stderr)
+            logger.error("Unexpected error while processing transaction", extra={"error": str(e)})
 
     def check_liveness(self) -> bool:
         """Controlla se il loop del consumer è attivo (heartbeat)."""
         is_alive = (time.time() - self.consumer.last_poll_timestamp) < 60
         if not is_alive:
-            print(f"[ERROR] Liveness check fallito: il consumer sembra bloccato.", file=sys.stderr)
+            logger.error("Liveness check failed: consumer appears stuck")
         return is_alive
 
     def check_readiness(self) -> bool:
@@ -132,25 +142,25 @@ class EnrichmentSystem:
             metadata = self.producer.list_topics(timeout=2.0)
             is_ready = metadata is not None and len(metadata.brokers) > 0
             if not is_ready:
-                print("[WARN] Readiness check fallito: Producer connesso ma nessun broker nei metadati.", file=sys.stderr)
+                logger.warning("Readiness check failed: producer connected but no brokers in metadata")
             return is_ready
         except Exception as e:
-            print(f"[ERROR] Readiness check fallito lato Producer: {e}", file=sys.stderr)
+            logger.error("Producer readiness check failed", extra={"error": str(e)})
             return False
 
 if __name__ == '__main__':
     app = EnrichmentSystem()
     try:
-        print("[INFO] Avvio Enrichment System...", flush=True)
-        print("[INFO] Avvio del server per le health probe...", flush=True)
+        logger.info("Starting enrichment system")
+        logger.info("Starting health probe server")
         app.health_server.start()
         app.consumer.start(app.process_transaction)
     except KeyboardInterrupt:
-        print("\n[INFO] Arresto Enrichment System in corso...", flush=True)
+        logger.info("Shutting down enrichment system")
         app.consumer.stop()
     finally:
-        print("[INFO] Arresto del server per le health probe...", flush=True)
+        logger.info("Stopping health probe server")
         app.health_server.stop()
         app.geo_locator.close()
-        print("[INFO] Flush dei messaggi Kafka in sospeso...", flush=True)
+        logger.info("Flushing pending Kafka messages")
         app.producer.flush()

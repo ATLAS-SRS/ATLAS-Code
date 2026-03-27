@@ -2,6 +2,10 @@ import argparse
 import os
 import sys
 import maxminddb
+from structured_logger import get_logger
+
+
+logger = get_logger("enrichment-system-geoip")
 
 class FastIPLocator:
     def __init__(self, db_filename='GeoLite2-City.mmdb'):
@@ -59,19 +63,25 @@ def main():
     try:
         locator = FastIPLocator(args.db)
     except FileNotFoundError as e:
-        print(e, file=sys.stderr)
+        logger.error("GeoIP database file not found", extra={"error": str(e), "database": args.db})
         sys.exit(1)
 
     result = locator.get_geo_data(args.ip)
     locator.close()
 
     if result:
-        print(f"IP: {args.ip}")
-        print(f"Nazione: {result['country_iso']}")
-        print(f"Città:   {result['city_name']}")
-        print(f"Lat/Lon: {result['latitude']}, {result['longitude']}")
+        logger.info(
+            "GeoIP lookup succeeded",
+            extra={
+                "ip": args.ip,
+                "country_iso": result["country_iso"],
+                "city_name": result["city_name"],
+                "latitude": result["latitude"],
+                "longitude": result["longitude"],
+            },
+        )
     else:
-        print(f"IP {args.ip} non trovato o non valido.", file=sys.stderr)
+        logger.error("IP address not found or invalid", extra={"ip": args.ip})
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable, Optional
+from structured_logger import get_logger
+
+
+logger = get_logger("notification-system-health")
 
 class HealthProbeHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -62,10 +66,10 @@ class HealthServer:
 
     def start(self):
         self.thread.start()
-        print(f"🩺 Health server interno avviato sulla porta {self.port} (Thread background)")
+        logger.info("Health probe server started", extra={"port": self.port})
 
     def stop(self):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
-        print("🛑 Health server interno fermato.")
+        logger.info("Health probe server stopped")

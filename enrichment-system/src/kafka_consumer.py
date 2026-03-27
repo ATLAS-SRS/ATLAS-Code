@@ -4,6 +4,10 @@ import sys
 import argparse
 import time
 from confluent_kafka import Consumer, KafkaError, KafkaException
+from structured_logger import get_logger
+
+
+logger = get_logger("enrichment-system-consumer")
 
 class TransactionConsumer:
     def __init__(self, broker_url, group_id, topic, auto_offset='earliest'):
@@ -29,7 +33,7 @@ class TransactionConsumer:
         """
         self.consumer.subscribe([self.topic])
         self.running = True
-        print(f"[DEBUG] Sottoscrizione al topic '{self.topic}' completata.", flush=True)
+        logger.info("Subscribed to Kafka topic", extra={"topic": self.topic})
 
         try:
             while self.running:
@@ -62,7 +66,7 @@ class TransactionConsumer:
     def close(self):
         """Rilascia le risorse del consumer."""
         self.consumer.close()
-        print("[DEBUG] Consumer chiuso correttamente.")
+        logger.info("Kafka consumer closed")
 
     def is_connected(self) -> bool:
         """Verifica se il consumer è in grado di comunicare con il broker Kafka."""
@@ -70,7 +74,7 @@ class TransactionConsumer:
             metadata = self.consumer.list_topics(timeout=2.0)
             return metadata is not None and len(metadata.brokers) > 0
         except KafkaException as e:
-            print(f"[ERROR] Readiness check fallito con eccezione: {e}", file=sys.stderr)
+            logger.error("Consumer readiness check failed", extra={"error": str(e)})
             return False
 
 # --- SEZIONE STANDALONE ---
@@ -79,9 +83,9 @@ def elabora_transazione_default(messaggio):
     """Logica di default usata quando lo script è eseguito direttamente."""
     try:
         transazione = json.loads(messaggio)
-        print(f"Transazione ricevuta: {transazione}")
+        logger.info("Transaction received", extra={"transaction": transazione})
     except json.JSONDecodeError:
-        print(f"Errore di decodifica JSON. Messaggio raw: {messaggio}", file=sys.stderr)
+        logger.error("Failed to decode JSON message", extra={"raw_message": messaggio})
 
 def main():
     parser = argparse.ArgumentParser(description="Kafka Transaction Consumer")
@@ -98,7 +102,7 @@ def main():
         # Passiamo la logica di default al loop
         app.start(elabora_transazione_default)
     except KeyboardInterrupt:
-        print("\nInterruzione manuale da tastiera.")
+        logger.info("Manual keyboard interruption received")
         app.stop()
 
 if __name__ == '__main__':
