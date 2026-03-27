@@ -6,6 +6,7 @@ SKIP_DATA_LAYER=false
 SKIP_APP_LAYER=false
 WAIT_TIMEOUT="300s"
 IMMUTABLE_RECOVERY=true
+BUILD_IMAGES=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
@@ -17,6 +18,7 @@ Usage: ./deploy.sh [options]
 
 Options:
   -n, --namespace <name>   Kubernetes namespace (default: default)
+      --build              Build Docker images before deployment
       --skip-data-layer    Do not install/upgrade Kafka, Redis, Schema Registry
       --skip-app-layer     Do not deploy compute layer manifests
       --wait-timeout <d>   Rollout timeout, e.g. 300s (default: 300s)
@@ -47,6 +49,10 @@ parse_args() {
       -n|--namespace)
         NAMESPACE="$2"
         shift 2
+        ;;
+      --build)
+        BUILD_IMAGES=true
+        shift
         ;;
       --skip-data-layer)
         SKIP_DATA_LAYER=true
@@ -82,6 +88,17 @@ ensure_namespace() {
     log "Creating namespace ${NAMESPACE}"
     kubectl create namespace "$NAMESPACE"
   fi
+}
+
+build_images() {
+  log "Building Docker images"
+
+  docker build -t atlas/api-gateway:latest -f gateway/Dockerfile gateway/
+  docker build -t atlas/enrichment-system:latest -f enrichment-system/Dockerfile enrichment-system/
+  docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
+  docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
+
+  log "Docker images built successfully"
 }
 
 deploy_data_layer() {
@@ -175,6 +192,10 @@ main() {
   if [[ "$NAMESPACE" != "default" ]]; then
     log "WARNING: app-layer ConfigMap currently references *.default.svc.cluster.local endpoints."
     log "If deploying outside 'default', update k8s/app-layer/config.yaml accordingly."
+  fi
+
+  if [[ "$BUILD_IMAGES" == true ]]; then
+    build_images
   fi
 
   if [[ "$SKIP_DATA_LAYER" == false ]]; then
