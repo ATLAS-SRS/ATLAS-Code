@@ -167,6 +167,22 @@ deploy_app_layer() {
   log "App layer deployed"
 }
 
+deploy_ingress_controller() {
+  log "Setting up NGINX Ingress Controller"
+
+  require_cmd helm
+
+  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
+  helm repo update >/dev/null
+
+  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx \
+    --create-namespace \
+    --wait
+
+  log "NGINX Ingress Controller is ready"
+}
+
 deploy_locust() {
   log "Deploying Locust manifests"
 
@@ -213,6 +229,8 @@ main() {
   kubectl get nodes >/dev/null
 
   ensure_namespace
+
+  deploy_ingress_controller
 
   if [[ "$NAMESPACE" != "default" ]]; then
     log "WARNING: app-layer ConfigMap currently references *.default.svc.cluster.local endpoints."
