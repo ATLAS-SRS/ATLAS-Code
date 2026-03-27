@@ -50,6 +50,32 @@ require_cmd() {
   fi
 }
 
+rollout_or_debug() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local label_selector="$3"
+
+  if kubectl rollout status "${resource_type}/${resource_name}" -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"; then
+    return 0
+  fi
+
+  log "Rollout failed for ${resource_type}/${resource_name}. Collecting diagnostics..."
+  kubectl describe "${resource_type}" "${resource_name}" -n "$NAMESPACE" >&2 || true
+
+  local pods
+  pods=$(kubectl get pods -n "$NAMESPACE" -l "$label_selector" -o name 2>/dev/null || true)
+  if [[ -n "$pods" ]]; then
+    for pod in $pods; do
+      echo "--- ${pod}" >&2
+      kubectl describe -n "$NAMESPACE" "$pod" >&2 || true
+      kubectl logs -n "$NAMESPACE" "$pod" --tail=120 >&2 || true
+      kubectl logs -n "$NAMESPACE" "$pod" --previous --tail=120 >&2 || true
+    done
+  fi
+
+  exit 1
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -167,10 +193,10 @@ deploy_app_layer() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
 
   log "Waiting for app rollouts"
-  kubectl rollout status deploy/api-gateway -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
-  kubectl rollout status deploy/enrichment-system -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
-  kubectl rollout status deploy/scoring-system -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
-  kubectl rollout status deploy/notification-system -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  rollout_or_debug deployment api-gateway "app.kubernetes.io/name=api-gateway"
+  rollout_or_debug deployment enrichment-system "app.kubernetes.io/name=enrichment-system"
+  rollout_or_debug deployment scoring-system "app.kubernetes.io/name=scoring-system"
+  rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
 
   log "App layer deployed"
 }
@@ -186,7 +212,9 @@ deploy_plt() {
 
   helm upgrade --install atlas-loki grafana/loki-stack \
     --namespace "$NAMESPACE" \
-    --create-namespace
+    --create-namespace \
+    --set loki.isDefault=false \
+    --set grafana.sidecar.datasources.enabled=false
 
   helm upgrade --install atlas-monitoring prometheus-community/kube-prometheus-stack \
     --namespace "$NAMESPACE" \
@@ -196,7 +224,25 @@ deploy_plt() {
 
   log "Waiting for PLT rollouts"
   kubectl rollout status deploy/atlas-monitoring-grafana -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
-  kubectl rollout status statefulset/prometheus-atlas-monitoring-kube-prometheus-prometheus -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+  local prom_sts=""
+  prom_sts=$(kubectl get statefulset -n "$NAMESPACE" \
+    -l "release=atlas-monitoring,app.kubernetes.io/name=prometheus" \
+    -o name | head -n 1 | sed 's|.*/||')
+
+  if [[ -z "$prom_sts" ]]; then
+    prom_sts=$(kubectl get statefulset -n "$NAMESPACE" \
+      -l "app.kubernetes.io/name=prometheus" \
+      -o name | head -n 1 | sed 's|.*/||')
+  fi
+
+  if [[ -z "$prom_sts" ]]; then
+    echo "ERROR: Prometheus StatefulSet not found for release 'atlas-monitoring'." >&2
+    kubectl get statefulset -n "$NAMESPACE" >&2 || true
+    exit 1
+  fi
+
+  kubectl rollout status "statefulset/${prom_sts}" -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
 
   log "PLT stack deployed"
 }
@@ -251,6 +297,14 @@ Quick checks:
 Locust Load Testing:
   kubectl port-forward svc/locust-master-ui 8089:8089 -n ${NAMESPACE}
   http://localhost:8089
+  host: http://api-gateway:8000
+  
+Monitoring & Observability:
+  Grafana UI:
+    kubectl port-forward svc/atlas-monitoring-grafana 3000:80 -n ${NAMESPACE}
+    http://localhost:3000
+    User: admin
+    Pass: \$(kubectl get secret -n ${NAMESPACE} atlas-monitoring-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode)
 EOF
 }
 

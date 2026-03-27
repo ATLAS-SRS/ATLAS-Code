@@ -4,3 +4,6 @@ prometheus:
     ingressClassName: nginx
     hosts:
       - prometheus.atlas.local
+
+nodeExporter:
+  enabled: false
