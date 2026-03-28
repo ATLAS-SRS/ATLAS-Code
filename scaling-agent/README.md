@@ -1,23 +1,38 @@
 # ATLAS Scaling Agent
 
-An autoscaling service for the ATLAS fraud detection system with two operator-facing modes:
-- `daemon`: HTTP service plus internal autoscaling loop for production/runtime use
-- `stdio`: MCP server for manual operator workflows
+The `scaling-agent/` directory contains two scaling runtimes used in ATLAS:
+- `agent.py`: Kubernetes central orchestrator (single-loop, multi-deployment)
+- `scaling_server.py`: Compose daemon + MCP server for operator workflows (`daemon`/`stdio`)
 
 ## Overview
 
-The Scaling Agent monitors system metrics (CPU, memory, request rates) and automatically scales the configured target service based on configurable thresholds. In the repo-level Docker Compose stack, this defaults to `enrichment-system`.
+### Kubernetes Central Orchestrator (`agent.py`)
+
+This runtime implements a feed-forward autoscaling model for the full fraud pipeline:
+- Reads global ingress load from API Gateway once per cycle using Prometheus RPS
+- Reuses the same global RPS value for each downstream deployment decision
+- Iterates deployments sequentially (`TARGET_DEPLOYMENTS`) in a single loop
+- Calls the LLM with deployment context and current replicas for each component
+- Applies replica updates with Kubernetes Deployment scale API
+
+Default target list:
+- `api-gateway,scoring-system,enrichment-system,notification-system`
+
+### Compose Daemon + MCP (`scaling_server.py`)
+
+The daemon monitors metrics and scales one configured target service in the repo-level Docker Compose runtime. In that stack, the default target service is `enrichment-system`.
 
 When `LLM_ENABLED=true`, the daemon can consult a local model served by LM Studio through its OpenAI-compatible API. The model acts as the primary operational recommender, while the daemon still enforces cooldowns, replica guardrails, and fallback logic.
 
 ## Features
 
-- **Real-time Monitoring**: Tracks CPU, memory, and request rate metrics
-- **Intelligent Scaling**: Automatically scales up/down based on load
-- **Safety Boundaries**: Configurable thresholds with cooldown periods
-- **MCP Integration**: Exposes scaling capabilities via Model Context Protocol
-- **Operational Safety**: Human-in-the-loop for critical scaling decisions
-- **LM Studio Support**: Optional local LLM reasoning with deterministic fallback
+- **Feed-Forward Pipeline Scaling**: One global ingress load signal drives sequential scaling decisions across multiple microservices
+- **Kubernetes Orchestration**: Native Deployment scale operations for app-layer services
+- **Real-time Monitoring**: Prometheus-backed load observations
+- **Safety Boundaries**: Replica guardrails and bounded action space for LLM decisions
+- **MCP Integration**: Operator-facing tools in `stdio` mode via `scaling_server.py`
+- **Operational Safety**: Human-in-the-loop and auditable scaling actions
+- **LM Studio Support**: Optional local LLM reasoning with deterministic fallback paths
 
 ## Architecture
 
@@ -31,21 +46,20 @@ When `LLM_ENABLED=true`, the daemon can consult a local model served by LM Studi
          └────────── System Metrics ──────────────┼────────────┘
 ```
 
-## Scaling Logic
+## Kubernetes Central Loop Logic (`agent.py`)
 
-### Scale Up Conditions
-- CPU usage > 70%
-- Memory usage > 80%
-- Request rate > 100/min
+1. Query global gateway RPS once at the beginning of each cycle.
+2. Parse `TARGET_DEPLOYMENTS` into a deployment list.
+3. For each deployment in order:
+    - read current replicas
+    - ask the LLM for `SCALE_UP` / `SCALE_DOWN` / `HOLD`
+    - enforce replica guardrails (`MIN_REPLICAS`, `MAX_REPLICAS`)
+    - patch deployment scale if needed
+4. Sleep 2 seconds between per-deployment iterations.
+5. Sleep `CHECK_INTERVAL` after a full pass.
 
-### Scale Down Conditions
-- All metrics < 30% of thresholds
-- Minimum 1 replica maintained
-
-### Safety Features
-- 5-minute cooldown between scaling actions
-- Maximum 5 replicas limit
-- Graceful error handling
+Default RPS query:
+- `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
 
 ## Daemon HTTP API
 
@@ -70,6 +84,23 @@ In `SCALING_MODE=stdio`, the agent exposes the following MCP tools:
 - `update_scaling_thresholds`: Modify scaling thresholds
 
 ## Usage
+
+### Kubernetes Central Orchestrator
+
+This is the runtime used by the Kubernetes manifest (`k8s/app-layer/scaling-agent.yaml`):
+
+```bash
+python -u agent.py
+```
+
+Main environment variables:
+- `PROMETHEUS_URL`
+- `NAMESPACE`
+- `TARGET_DEPLOYMENTS`
+- `PROMQL_RPS_QUERY`
+- `CHECK_INTERVAL`
+- `MIN_REPLICAS` / `MAX_REPLICAS`
+- `LLM_API_URL` / `LLM_MODEL` / `LLM_TIMEOUT` / `LLM_TEMPERATURE`
 
 ### Manual Operation
 ```bash
@@ -104,7 +135,17 @@ docker compose run --rm --entrypoint pytest scaling-agent -o cache_dir=/tmp/pyte
 
 ## Configuration
 
-Environment variables:
+### `agent.py` (Kubernetes Central Orchestrator)
+- `PROMETHEUS_URL`: Prometheus server URL
+- `NAMESPACE`: Kubernetes namespace containing target Deployments
+- `TARGET_DEPLOYMENTS`: comma-separated deployment names to evaluate sequentially
+- `PROMQL_RPS_QUERY`: global ingress RPS query (default targets `api-gateway`)
+- `CHECK_INTERVAL`: full-loop interval in seconds
+- `SCALE_UP_THRESHOLD` / `SCALE_DOWN_THRESHOLD`: policy hints provided to the LLM
+- `MIN_REPLICAS` / `MAX_REPLICAS`: scaling guardrails
+- `LLM_API_URL`, `LLM_MODEL`, `LLM_TIMEOUT`, `LLM_TEMPERATURE`, `LLM_API_KEY`: local LLM API settings
+
+### `scaling_server.py` (Compose Daemon / MCP)
 - `PROMETHEUS_URL`: Prometheus server URL (default: http://localhost:9090)
 - `COMPOSE_PROJECT_NAME`: Docker Compose project name (default: atlas-code)
 - `COMPOSE_WORKDIR`: path containing `docker-compose.yml` for scaling commands

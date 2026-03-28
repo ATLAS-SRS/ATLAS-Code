@@ -55,8 +55,10 @@ spec:
               value: http://atlas-monitoring-kube-prom-prometheus.default.svc.cluster.local:9090
             - name: NAMESPACE
               value: default
-            - name: TARGET_DEPLOYMENT
-              value: api-gateway
+            - name: TARGET_DEPLOYMENTS
+              value: api-gateway,scoring-system,enrichment-system,notification-system
+            - name: PROMQL_RPS_QUERY
+              value: sum(rate(http_requests_total{job="api-gateway"}[1m]))
             - name: CHECK_INTERVAL
               value: "15"
             - name: SCALE_UP_THRESHOLD

@@ -20,7 +20,7 @@ ATLAS implements a sophisticated fraud detection platform that combines real-tim
 
 ### Agentic Operational Layer
 
-- **Scaling Agent (MCP)**: Intelligent container scaling based on system load
+- **Scaling Agent**: Centralized autoscaling orchestration for Kubernetes and MCP/HTTP operator workflows
 - **Operational Safety**: Human-in-the-loop decision making
 - **Metrics-Driven Actions**: Automated responses to system conditions
 
@@ -33,7 +33,7 @@ ATLAS implements a sophisticated fraud detection platform that combines real-tim
 4. **Database Storage**: PostgreSQL for transaction persistence
 
 ### Intelligent Operations
-- **Auto-Scaling**: MCP-based agent manages container replicas
+- **Auto-Scaling**: Feed-forward orchestration scales the full processing pipeline from a global ingress load indicator
 - **Load Monitoring**: Real-time metrics from Prometheus
 - **Safety Boundaries**: Configurable thresholds with human oversight
 - **Operational Visibility**: Comprehensive logging and alerting
@@ -148,12 +148,26 @@ docker compose up -d --build --scale transaction-client=0
 
 ## Scaling Agent
 
-The intelligent scaling agent automatically manages container replicas based on system load:
+The platform currently supports two operational scaling runtimes:
 
-### Scaling Triggers
-- **Scale Up**: CPU > 70%, Memory > 80%, Requests > 100/min
-- **Scale Down**: All metrics < 30% of thresholds
-- **Limits**: 1-5 replicas with 5-minute cooldown
+### Kubernetes Central Orchestrator (single loop)
+- Runs from `scaling-agent/agent.py` (container entrypoint in `scaling-agent/Dockerfile`)
+- Uses gateway ingress traffic as global load indicator via Prometheus query:
+  `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
+- Applies one global RPS reading to all pipeline services
+- Scales deployments sequentially in one loop (default order):
+  `api-gateway,scoring-system,enrichment-system,notification-system`
+- Adds a short pause between deployment decisions to avoid LLM API bursts
+
+Key environment variables:
+- `TARGET_DEPLOYMENTS` (default: `api-gateway,scoring-system,enrichment-system,notification-system`)
+- `PROMQL_RPS_QUERY` (default: gateway-only query above)
+- `CHECK_INTERVAL`, `MIN_REPLICAS`, `MAX_REPLICAS`, `LLM_API_URL`, `LLM_MODEL`
+
+### Compose Daemon + MCP Runtime
+- Runs from `scaling-agent/scaling_server.py`
+- Exposes HTTP endpoints and MCP tools for operator workflows
+- Uses deterministic rules with optional LM Studio assistance
 
 ### MCP Tools Available
 - `get_current_metrics`: System performance data
@@ -166,6 +180,8 @@ The intelligent scaling agent automatically manages container replicas based on 
 - `/decision` exposes `llm_decision`, `rule_based_decision`, `effective_decision`, `decision_source`, and `llm_status`
 - Unsafe, low-confidence, or invalid model output falls back to deterministic rules
 - In the root Docker stack, the scaling daemon is started by `docker compose` and targets `enrichment-system` by default; override `TARGET_SERVICE` if you want to scale a different service
+
+For Kubernetes central orchestration (`agent.py`), configure `LLM_API_URL` and `LLM_MODEL` in `k8s/app-layer/scaling-agent.yaml`.
 
 ```bash
 # Enable LM Studio-backed orchestration in the scaling agent

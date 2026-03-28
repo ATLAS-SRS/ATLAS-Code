@@ -12,11 +12,14 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 NAMESPACE = os.getenv("NAMESPACE", "default")
-TARGET_DEPLOYMENT = os.getenv("TARGET_DEPLOYMENT", "api-gateway")
+TARGET_DEPLOYMENTS = os.getenv(
+    "TARGET_DEPLOYMENTS",
+    "api-gateway,scoring-system,enrichment-system,notification-system",
+)
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))
 PROMQL_RPS_QUERY = os.getenv(
     "PROMQL_RPS_QUERY",
-    f'sum(rate(http_requests_total{{job="{TARGET_DEPLOYMENT}"}}[1m]))',
+    'sum(rate(http_requests_total{job="api-gateway"}[1m]))',
 )
 
 # Thresholds are provided to the LLM as policy hints.
@@ -36,7 +39,7 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
 PROMQL_RPS_FALLBACK_QUERIES = [
-    f'sum(rate(http_requests_total{{app_kubernetes_io_name="{TARGET_DEPLOYMENT}"}}[1m]))',
+    'sum(rate(http_requests_total{app_kubernetes_io_name="api-gateway"}[1m]))',
     f'sum(rate(http_requests_total{{namespace="{NAMESPACE}"}}[1m]))',
     "sum(rate(http_requests_total[1m]))",
 ]
@@ -116,7 +119,11 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     return parsed
 
 
-def decide_scaling_action_with_llm(rps: float, current_replicas: int) -> Tuple[str, str]:
+def decide_scaling_action_with_llm(
+    deployment_name: str,
+    rps: float,
+    current_replicas: int,
+) -> Tuple[str, str]:
     headers = {"Content-Type": "application/json"}
     if LLM_API_KEY:
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
@@ -129,7 +136,9 @@ def decide_scaling_action_with_llm(rps: float, current_replicas: int) -> Tuple[s
         allowed_actions = ["SCALE_UP", "SCALE_DOWN", "HOLD"]
 
     system_prompt = (
-        "You are an autoscaling decision engine. "
+        "You are an autoscaling engine evaluating a microservice. "
+        "The 'rps' provided is the global system entry traffic. "
+        "Decide if this specific downstream component needs scaling based on the global traffic. "
         "Return ONLY valid JSON with fields: action and reason. "
         "Allowed action values are provided in the user payload under allowed_actions. "
         "You must pick ONLY one of those allowed_actions. "
@@ -138,7 +147,7 @@ def decide_scaling_action_with_llm(rps: float, current_replicas: int) -> Tuple[s
     )
 
     user_payload = {
-        "target_deployment": TARGET_DEPLOYMENT,
+        "deployment_name": deployment_name,
         "namespace": NAMESPACE,
         "rps": round(rps, 6),
         "current_replicas": current_replicas,
@@ -222,12 +231,20 @@ def set_replicas(
 def run() -> None:
     config.load_incluster_config()
     apps_api = client.AppsV1Api()
+    deployments_list = [
+        deployment.strip()
+        for deployment in TARGET_DEPLOYMENTS.split(",")
+        if deployment.strip()
+    ]
+
+    if not deployments_list:
+        raise RuntimeError("TARGET_DEPLOYMENTS is empty after parsing")
 
     log_event(
         logging.INFO,
         "Scaling agent started",
         namespace=NAMESPACE,
-        target_deployment=TARGET_DEPLOYMENT,
+        target_deployments=deployments_list,
         check_interval=CHECK_INTERVAL,
         promql_rps_query=PROMQL_RPS_QUERY,
         scale_up_threshold=SCALE_UP_THRESHOLD,
@@ -241,74 +258,102 @@ def run() -> None:
     while True:
         try:
             rps = get_rps(PROMETHEUS_URL)
-            current_replicas = get_current_replicas(apps_api, NAMESPACE, TARGET_DEPLOYMENT)
-
             log_event(
                 logging.INFO,
-                "Observed metrics",
+                "Observed global load",
                 rps=round(rps, 4),
-                current_replicas=current_replicas,
             )
 
-            action, reason = decide_scaling_action_with_llm(rps, current_replicas)
+            for deployment in deployments_list:
+                try:
+                    current_replicas = get_current_replicas(apps_api, NAMESPACE, deployment)
 
-            log_event(
-                logging.INFO,
-                "LLM scaling decision",
-                action=action,
-                reason=reason,
-                rps=round(rps, 4),
-                current_replicas=current_replicas,
-            )
+                    log_event(
+                        logging.INFO,
+                        "Analyzing deployment",
+                        deployment=deployment,
+                        rps=round(rps, 4),
+                        current_replicas=current_replicas,
+                    )
 
-            desired_replicas = current_replicas
+                    action, reason = decide_scaling_action_with_llm(
+                        deployment,
+                        rps,
+                        current_replicas,
+                    )
 
-            if action == "SCALE_UP" and current_replicas < MAX_REPLICAS:
-                desired_replicas = current_replicas + 1
-                set_replicas(apps_api, NAMESPACE, TARGET_DEPLOYMENT, desired_replicas)
-                log_event(
-                    logging.INFO,
-                    "Scaling up",
-                    rps=round(rps, 4),
-                    llm_reason=reason,
-                    from_replicas=current_replicas,
-                    to_replicas=desired_replicas,
-                )
-            elif action == "SCALE_DOWN" and current_replicas > MIN_REPLICAS:
-                desired_replicas = current_replicas - 1
-                set_replicas(apps_api, NAMESPACE, TARGET_DEPLOYMENT, desired_replicas)
-                log_event(
-                    logging.INFO,
-                    "Scaling down",
-                    rps=round(rps, 4),
-                    llm_reason=reason,
-                    from_replicas=current_replicas,
-                    to_replicas=desired_replicas,
-                )
-            elif action == "SCALE_UP" and current_replicas >= MAX_REPLICAS:
-                log_event(
-                    logging.INFO,
-                    "No scaling action",
-                    reason="LLM requested scale up but max replicas already reached",
-                    rps=round(rps, 4),
-                    replicas=current_replicas,
-                )
-            elif action == "SCALE_DOWN" and current_replicas <= MIN_REPLICAS:
-                log_event(
-                    logging.INFO,
-                    "No scaling action",
-                    reason="LLM requested scale down but min replicas already reached",
-                    rps=round(rps, 4),
-                    replicas=current_replicas,
-                )
-            else:
-                log_event(
-                    logging.INFO,
-                    "No scaling action",
-                    reason=reason,
-                    rps=round(rps, 4),
-                    replicas=current_replicas,
-                )
+                    log_event(
+                        logging.INFO,
+                        "LLM scaling decision",
+                        deployment=deployment,
+                        action=action,
+                        reason=reason,
+                        rps=round(rps, 4),
+                        current_replicas=current_replicas,
+                    )
+
+                    desired_replicas = current_replicas
+
+                    if action == "SCALE_UP" and current_replicas < MAX_REPLICAS:
+                        desired_replicas = current_replicas + 1
+                        set_replicas(apps_api, NAMESPACE, deployment, desired_replicas)
+                        log_event(
+                            logging.INFO,
+                            "Scaling up",
+                            deployment=deployment,
+                            rps=round(rps, 4),
+                            llm_reason=reason,
+                            from_replicas=current_replicas,
+                            to_replicas=desired_replicas,
+                        )
+                    elif action == "SCALE_DOWN" and current_replicas > MIN_REPLICAS:
+                        desired_replicas = current_replicas - 1
+                        set_replicas(apps_api, NAMESPACE, deployment, desired_replicas)
+                        log_event(
+                            logging.INFO,
+                            "Scaling down",
+                            deployment=deployment,
+                            rps=round(rps, 4),
+                            llm_reason=reason,
+                            from_replicas=current_replicas,
+                            to_replicas=desired_replicas,
+                        )
+                    elif action == "SCALE_UP" and current_replicas >= MAX_REPLICAS:
+                        log_event(
+                            logging.INFO,
+                            "No scaling action",
+                            deployment=deployment,
+                            reason="LLM requested scale up but max replicas already reached",
+                            rps=round(rps, 4),
+                            replicas=current_replicas,
+                        )
+                    elif action == "SCALE_DOWN" and current_replicas <= MIN_REPLICAS:
+                        log_event(
+                            logging.INFO,
+                            "No scaling action",
+                            deployment=deployment,
+                            reason="LLM requested scale down but min replicas already reached",
+                            rps=round(rps, 4),
+                            replicas=current_replicas,
+                        )
+                    else:
+                        log_event(
+                            logging.INFO,
+                            "No scaling action",
+                            deployment=deployment,
+                            reason=reason,
+                            rps=round(rps, 4),
+                            replicas=current_replicas,
+                        )
+                except Exception as exc:
+                    log_event(
+                        logging.ERROR,
+                        "Deployment scaling error",
+                        deployment=deployment,
+                        error=str(exc),
+                    )
+                finally:
+                    time.sleep(2)
 
         except Exception as exc:
             log_event(logging.ERROR, "Scaling loop error", error=str(exc))
