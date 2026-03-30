@@ -234,11 +234,23 @@ spec:
         app.kubernetes.io/part-of: fraud-detection
         app.kubernetes.io/component: compute-layer
     spec:
+      initContainers:
+        - name: wait-for-api-gateway
+          image: curlimages/curl:8.12.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sSf http://api-gateway:8000/health/ready > /dev/null; do
+                echo "Waiting for api-gateway:8000..."
+                sleep 2
+              done
       containers:
         - name: locust-master
           image: locustio/locust:latest
           imagePullPolicy: IfNotPresent
-          command: ["locust", "-f", "/mnt/locust/locustfile.py", "--master"]
+          command: ["locust", "-f", "/mnt/locust/locustfile.py", "--master", "--host", "http://api-gateway:8000"]
           ports:
             - name: web-ui
               containerPort: 8089

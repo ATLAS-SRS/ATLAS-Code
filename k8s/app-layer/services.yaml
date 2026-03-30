@@ -75,7 +75,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: locust-master
   ports:
