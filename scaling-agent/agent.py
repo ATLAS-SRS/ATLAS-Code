@@ -1,11 +1,14 @@
 import json
-import logging
 import os
 import time
-from typing import Any, Dict, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import requests
 from kubernetes import client, config
+from mcp.server.fastmcp import FastMCP
+from openai import OpenAI
+from structured_logger import get_logger
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -21,342 +24,623 @@ PROMQL_RPS_QUERY = os.getenv(
     "PROMQL_RPS_QUERY",
     'sum(rate(http_requests_total{job="api-gateway"}[1m]))',
 )
-
-# Thresholds are provided to the LLM as policy hints.
-SCALE_UP_THRESHOLD = float(os.getenv("SCALE_UP_THRESHOLD", "50"))
-SCALE_DOWN_THRESHOLD = float(os.getenv("SCALE_DOWN_THRESHOLD", "10"))
-
 MIN_REPLICAS = int(os.getenv("MIN_REPLICAS", "1"))
 MAX_REPLICAS = int(os.getenv("MAX_REPLICAS", "5"))
+AGENT_IDLE_RPS_HINT = float(os.getenv("AGENT_IDLE_RPS_HINT", "0.05"))
+RPS_REPLICA_THRESHOLDS = os.getenv("RPS_REPLICA_THRESHOLDS", "5,15,30,60")
 
-LLM_API_URL = os.getenv(
-    "LLM_API_URL",
-    "http://host.docker.internal:1234/v1/chat/completions",
-)
+LLM_API_URL = os.getenv("LLM_API_URL", "http://host.docker.internal:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen/qwen2.5-coder-14b")
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "20"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+MAX_TOOL_STEPS = int(os.getenv("MAX_TOOL_STEPS", "8"))
 
 PROMQL_RPS_FALLBACK_QUERIES = [
     'sum(rate(http_requests_total{app_kubernetes_io_name="api-gateway"}[1m]))',
-    f'sum(rate(http_requests_total{{namespace="{NAMESPACE}"}}[1m]))',
-    "sum(rate(http_requests_total[1m]))",
 ]
 
-VALID_ACTIONS = {"SCALE_UP", "SCALE_DOWN", "HOLD"}
+SYSTEM_PROMPT = (
+    "Sei un autoscaler autonomo di Kubernetes. Il tuo obiettivo è mantenere il sistema "
+    "stabile. Hai a disposizione strumenti per leggere il traffico globale (RPS), leggere "
+    "le repliche attuali di un deployment e modificare le repliche. Regole: Min repliche "
+    "= 1, Max = 5. Workflow obbligatorio: prima richiama get_scaling_recommendation, poi "
+    "confronta target_replicas con current_replicas e decidi in base al traffico reale. "
+    "Se current_replicas > target_replicas devi scalare down (almeno di 1), se "
+    "current_replicas < target_replicas devi scalare up (almeno di 1), altrimenti HOLD. "
+    "Non mantenere 5 repliche senza una giustificazione numerica coerente con il traffico."
+)
+
+LOGGER = get_logger("scaling-agent")
+LOGGER.setLevel(LOG_LEVEL)
 
 
-def setup_logger() -> logging.Logger:
-    logger = logging.getLogger("scaling-agent")
-    logger.setLevel(LOG_LEVEL)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-    return logger
+def log_event(level: str, message: str, **fields: object) -> None:
+    log_fn = getattr(LOGGER, level.lower(), LOGGER.info)
+    log_fn(message, extra=fields)
 
 
-LOGGER = setup_logger()
+@dataclass
+class RuntimeContext:
+    """Shared runtime dependencies for MCP tools executed by the local agent."""
+
+    apps_api: client.AppsV1Api
+    namespace: str
+    prometheus_url: str
 
 
-def log_event(level: int, message: str, **fields: object) -> None:
-    payload = {"message": message, **fields}
-    LOGGER.log(level, json.dumps(payload, sort_keys=True))
+RUNTIME_CONTEXT: RuntimeContext | None = None
+ALLOWED_DEPLOYMENTS: set[str] = set()
+
+mcp = FastMCP("atlas-scaling-agent")
 
 
-def run_prometheus_query(prometheus_base_url: str, query: str) -> list:
+def _get_runtime_context() -> RuntimeContext:
+    if RUNTIME_CONTEXT is None:
+        raise RuntimeError("Runtime context is not initialized")
+    return RUNTIME_CONTEXT
+
+
+def _run_prometheus_query(prometheus_base_url: str, query: str) -> list[dict[str, Any]]:
     endpoint = f"{prometheus_base_url.rstrip('/')}/api/v1/query"
-    response = requests.get(
-        endpoint,
-        params={"query": query},
-        timeout=10,
-    )
+    response = requests.get(endpoint, params={"query": query}, timeout=10)
     response.raise_for_status()
-
     data = response.json()
+
     if data.get("status") != "success":
         raise RuntimeError(f"Prometheus query failed for '{query}': {data}")
 
-    return data.get("data", {}).get("result", [])
+    result = data.get("data", {}).get("result", [])
+    if not isinstance(result, list):
+        raise RuntimeError(f"Invalid Prometheus result format for '{query}'")
+    return result
 
 
-def get_rps(prometheus_base_url: str) -> float:
+def _normalize_openai_base_url(url: str) -> str:
+    normalized = url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        normalized = normalized[: -len("/chat/completions")]
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    return normalized
+
+
+def _parse_rps_thresholds(raw_thresholds: str) -> list[float]:
+    parts = [part.strip() for part in raw_thresholds.split(",") if part.strip()]
+    if len(parts) != 4:
+        raise RuntimeError(
+            "RPS_REPLICA_THRESHOLDS must contain exactly 4 comma-separated numeric values"
+        )
+
+    thresholds = [float(value) for value in parts]
+    if thresholds != sorted(thresholds):
+        raise RuntimeError("RPS_REPLICA_THRESHOLDS must be sorted ascending")
+    return thresholds
+
+
+def _target_replicas_from_rps(rps: float, thresholds: list[float]) -> int:
+    if rps <= thresholds[0]:
+        return 1
+    if rps <= thresholds[1]:
+        return 2
+    if rps <= thresholds[2]:
+        return 3
+    if rps <= thresholds[3]:
+        return 4
+    return 5
+
+
+def _build_openai_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_scaling_recommendation",
+                "description": (
+                    "Calcola una raccomandazione operativa basata sul traffico attuale: "
+                    "restituisce RPS osservato, repliche correnti, target repliche suggerito e "
+                    "azione suggerita (SCALE_UP/SCALE_DOWN/HOLD). Questo e' lo strumento principale "
+                    "per decidere scale up/down in base al carico."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "deployment": {
+                            "type": "string",
+                            "description": "Nome del deployment target.",
+                        }
+                    },
+                    "required": ["deployment"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_rps",
+                "description": (
+                    "Legge il traffico globale in Requests Per Second dal Prometheus del cluster. "
+                    "Usare questo strumento come primo passo per stimare il carico complessivo "
+                    "prima di decidere una modifica delle repliche."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_replicas",
+                "description": (
+                    "Legge il numero di repliche correnti di un deployment Kubernetes nel namespace "
+                    "gestito dall'agente. Da usare sempre prima di proporre uno scale up/down."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "deployment": {
+                            "type": "string",
+                            "description": "Nome del deployment da ispezionare.",
+                        }
+                    },
+                    "required": ["deployment"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "set_replicas",
+                "description": (
+                    "Aggiorna il numero di repliche di un deployment Kubernetes. "
+                    f"Vincoli hard: replicas deve essere compreso tra {MIN_REPLICAS} e {MAX_REPLICAS}."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "deployment": {
+                            "type": "string",
+                            "description": "Nome del deployment da scalare.",
+                        },
+                        "replicas": {
+                            "type": "integer",
+                            "description": "Numero target di repliche desiderate.",
+                        },
+                    },
+                    "required": ["deployment", "replicas"],
+                },
+            },
+        },
+    ]
+
+
+@mcp.tool()
+def get_scaling_recommendation(deployment: str) -> dict[str, Any]:
+    """
+    Calcola una raccomandazione di scaling basata sul traffico globale osservato.
+
+    La funzione combina due misure operative correnti:
+    - RPS globale (letto da Prometheus)
+    - repliche correnti del deployment target
+
+    In base alle soglie configurate in RPS_REPLICA_THRESHOLDS determina un target
+    di repliche tra MIN_REPLICAS e MAX_REPLICAS e produce anche l'azione suggerita.
+
+    Args:
+        deployment: Nome del deployment da valutare.
+
+    Returns:
+        dict[str, Any]: Dizionario con rps, current_replicas, target_replicas,
+        suggested_action e una spiegazione sintetica.
+
+    Raises:
+        ValueError: Se deployment non e' autorizzato.
+        RuntimeError: Se le soglie RPS sono invalide.
+    """
+
+    if deployment not in ALLOWED_DEPLOYMENTS:
+        raise ValueError(
+            f"Deployment '{deployment}' non consentito. Consentiti: {sorted(ALLOWED_DEPLOYMENTS)}"
+        )
+
+    thresholds = _parse_rps_thresholds(RPS_REPLICA_THRESHOLDS)
+    observed_rps = get_rps()
+    current = get_current_replicas(deployment=deployment)
+    target = _target_replicas_from_rps(observed_rps, thresholds)
+    target = max(MIN_REPLICAS, min(MAX_REPLICAS, target))
+
+    if current < target:
+        suggested_action = "SCALE_UP"
+    elif current > target:
+        suggested_action = "SCALE_DOWN"
+    else:
+        suggested_action = "HOLD"
+
+    recommendation = {
+        "deployment": deployment,
+        "rps": round(observed_rps, 6),
+        "current_replicas": current,
+        "target_replicas": target,
+        "suggested_action": suggested_action,
+        "thresholds": thresholds,
+        "reason": "Target calcolato da soglie RPS configurate",
+    }
+    log_event("info", "Tool call completed", tool="get_scaling_recommendation", **recommendation)
+    return recommendation
+
+
+@mcp.tool()
+def get_rps() -> float:
+    """
+    Legge il traffico globale in Requests Per Second (RPS) dall'infrastruttura Prometheus.
+
+    Questo strumento esegue una query principale e, in caso di risultato vuoto,
+    prova query di fallback predefinite. Il valore ritornato rappresenta il carico
+    di ingresso complessivo del sistema ed e' utile per decisioni di autoscaling
+    coordinate tra servizi multipli.
+
+    Returns:
+        float: RPS globale corrente osservato dal primo time series disponibile.
+
+    Raises:
+        RuntimeError: Se nessuna query produce un risultato valido.
+        requests.HTTPError: Se Prometheus risponde con errore HTTP.
+    """
+
+    context = _get_runtime_context()
     queries = [PROMQL_RPS_QUERY, *PROMQL_RPS_FALLBACK_QUERIES]
-    attempts = []
+    attempts: list[dict[str, str]] = []
 
+    log_event("info", "Tool call started", tool="get_rps")
     for query in queries:
-        result = run_prometheus_query(prometheus_base_url, query)
+        result = _run_prometheus_query(context.prometheus_url, query)
         if not result:
             attempts.append({"query": query, "status": "empty_result"})
             continue
 
         value = result[0].get("value", [None, "0"])[1]
         rps = float(value)
-        log_event(logging.INFO, "RPS query selected", query=query, rps=round(rps, 6))
+        log_event(
+            "info",
+            "Tool call completed",
+            tool="get_rps",
+            query=query,
+            rps=round(rps, 6),
+        )
         return rps
 
-    raise RuntimeError(f"No RPS series found. Attempts: {attempts}")
-
-
-def extract_json_object(text: str) -> Dict[str, Any]:
-    stripped = text.strip()
-
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`").strip()
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"LLM output is not JSON: {text}")
-
-    candidate = stripped[start : end + 1]
-    parsed = json.loads(candidate)
-    if not isinstance(parsed, dict):
-        raise ValueError(f"LLM JSON is not an object: {parsed}")
-    return parsed
-
-
-def decide_scaling_action_with_llm(
-    deployment_name: str,
-    rps: float,
-    current_replicas: int,
-) -> Tuple[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-
-    if current_replicas <= MIN_REPLICAS:
-        allowed_actions = ["SCALE_UP", "HOLD"]
-    elif current_replicas >= MAX_REPLICAS:
-        allowed_actions = ["SCALE_DOWN", "HOLD"]
-    else:
-        allowed_actions = ["SCALE_UP", "SCALE_DOWN", "HOLD"]
-
-    system_prompt = (
-        "You are an autoscaling engine evaluating a microservice. "
-        "The 'rps' provided is the global system entry traffic. "
-        "Decide if this specific downstream component needs scaling based on the global traffic. "
-        "Return ONLY valid JSON with fields: action and reason. "
-        "Allowed action values are provided in the user payload under allowed_actions. "
-        "You must pick ONLY one of those allowed_actions. "
-        "Hard rule: never propose scaling below min_replicas or above max_replicas. "
-        "Never return markdown, code fences, or extra text."
+    log_event("error", "Tool call failed", tool="get_rps", attempts=attempts)
+    # If no series is available for gateway-focused queries, treat load as idle.
+    log_event(
+        "warning",
+        "No RPS series found for configured queries; defaulting to 0",
+        tool="get_rps",
+        attempts=attempts,
     )
+    return 0.0
 
-    user_payload = {
-        "deployment_name": deployment_name,
-        "namespace": NAMESPACE,
-        "rps": round(rps, 6),
-        "current_replicas": current_replicas,
-        "min_replicas": MIN_REPLICAS,
-        "max_replicas": MAX_REPLICAS,
-        "policy_hints": {
-            "scale_up_threshold": SCALE_UP_THRESHOLD,
-            "scale_down_threshold": SCALE_DOWN_THRESHOLD,
-        },
-        "allowed_actions": allowed_actions,
-        "required_output_example": {
-            "action": "HOLD",
-            "reason": "RPS is stable and within target range.",
-        },
-    }
 
-    body = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload, sort_keys=True)},
-        ],
-        "temperature": LLM_TEMPERATURE,
-        "max_tokens": 120,
-    }
+@mcp.tool()
+def get_current_replicas(deployment: str) -> int:
+    """
+    Restituisce il numero di repliche correnti di un deployment Kubernetes.
 
-    response = requests.post(
-        LLM_API_URL,
-        headers=headers,
-        json=body,
-        timeout=LLM_TIMEOUT,
-    )
-    response.raise_for_status()
+    Args:
+        deployment: Nome del deployment target su cui leggere lo stato corrente.
 
-    raw = response.json()
-    content = (
-        raw.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-        .strip()
-    )
-    if not content:
-        raise RuntimeError(f"LLM returned empty content: {raw}")
+    Returns:
+        int: Numero di repliche correnti rilevate nel campo status del deployment scale.
 
-    parsed = extract_json_object(content)
-    action = str(parsed.get("action", "")).upper().strip()
-    reason = str(parsed.get("reason", "No reason provided")).strip()
+    Raises:
+        ValueError: Se il deployment non e' consentito dalla policy TARGET_DEPLOYMENTS.
+        kubernetes.client.exceptions.ApiException: Se la chiamata Kubernetes API fallisce.
+    """
 
-    if action not in VALID_ACTIONS:
-        raise RuntimeError(f"Invalid LLM action '{action}' from payload: {parsed}")
-
-    if action not in allowed_actions:
-        adjusted_reason = (
-            f"LLM suggested '{action}' but allowed actions are {allowed_actions}; "
-            "forcing HOLD due to replica bounds."
+    if deployment not in ALLOWED_DEPLOYMENTS:
+        raise ValueError(
+            f"Deployment '{deployment}' non consentito. Consentiti: {sorted(ALLOWED_DEPLOYMENTS)}"
         )
-        return "HOLD", adjusted_reason
 
-    return action, reason
-
-
-def get_current_replicas(api: client.AppsV1Api, namespace: str, deployment: str) -> int:
-    scale_obj = api.read_namespaced_deployment_scale(name=deployment, namespace=namespace)
-    return int(scale_obj.status.replicas or 0)
-
-
-def set_replicas(
-    api: client.AppsV1Api,
-    namespace: str,
-    deployment: str,
-    replicas: int,
-) -> None:
-    body = {"spec": {"replicas": replicas}}
-    api.patch_namespaced_deployment_scale(
+    context = _get_runtime_context()
+    log_event("info", "Tool call started", tool="get_current_replicas", deployment=deployment)
+    scale_obj = context.apps_api.read_namespaced_deployment_scale(
         name=deployment,
-        namespace=namespace,
+        namespace=context.namespace,
+    )
+    replicas = int(scale_obj.status.replicas or 0)
+    log_event(
+        "info",
+        "Tool call completed",
+        tool="get_current_replicas",
+        deployment=deployment,
+        replicas=replicas,
+    )
+    return replicas
+
+
+@mcp.tool()
+def set_replicas(deployment: str, replicas: int) -> str:
+    """
+    Applica un nuovo numero di repliche a un deployment Kubernetes.
+
+    Args:
+        deployment: Nome del deployment target da scalare.
+        replicas: Numero desiderato di repliche da impostare.
+
+    Returns:
+        str: Messaggio confermato e leggibile che descrive l'azione effettuata.
+
+    Raises:
+        ValueError: Se il deployment non e' consentito o se replicas viola i guardrail.
+        kubernetes.client.exceptions.ApiException: Se il patch della scala fallisce.
+    """
+
+    if deployment not in ALLOWED_DEPLOYMENTS:
+        raise ValueError(
+            f"Deployment '{deployment}' non consentito. Consentiti: {sorted(ALLOWED_DEPLOYMENTS)}"
+        )
+    if replicas < MIN_REPLICAS or replicas > MAX_REPLICAS:
+        raise ValueError(
+            f"replicas={replicas} fuori limite. Limiti: min={MIN_REPLICAS}, max={MAX_REPLICAS}"
+        )
+
+    context = _get_runtime_context()
+    body = {"spec": {"replicas": replicas}}
+
+    log_event(
+        "info",
+        "Tool call started",
+        tool="set_replicas",
+        deployment=deployment,
+        requested_replicas=replicas,
+    )
+    context.apps_api.patch_namespaced_deployment_scale(
+        name=deployment,
+        namespace=context.namespace,
         body=body,
     )
 
+    result_message = f"Repliche impostate a {replicas} per il deployment {deployment}"
+    log_event(
+        "info",
+        "Tool call completed",
+        tool="set_replicas",
+        deployment=deployment,
+        replicas=replicas,
+    )
+    return result_message
 
-def run() -> None:
-    config.load_incluster_config()
-    apps_api = client.AppsV1Api()
-    deployments_list = [
-        deployment.strip()
-        for deployment in TARGET_DEPLOYMENTS.split(",")
-        if deployment.strip()
+
+def _build_tool_dispatch() -> dict[str, Callable[..., Any]]:
+    return {
+        "get_scaling_recommendation": get_scaling_recommendation,
+        "get_rps": get_rps,
+        "get_current_replicas": get_current_replicas,
+        "set_replicas": set_replicas,
+    }
+
+
+def _build_openai_client() -> OpenAI:
+    base_url = _normalize_openai_base_url(LLM_API_URL)
+    api_key = LLM_API_KEY or "local"
+    log_event("info", "OpenAI client initialized", base_url=base_url, model=LLM_MODEL)
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=LLM_TIMEOUT)
+
+
+def _run_deployment_agent_cycle(
+    llm_client: OpenAI,
+    deployment: str,
+    observed_rps: float,
+    observed_replicas: int,
+    openai_tools: list[dict[str, Any]],
+    tool_dispatch: dict[str, Callable[..., Any]],
+    reconsideration_note: str | None = None,
+) -> str:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Analizza il deployment seguente e decidi autonomamente se intervenire. "
+                "Usa i tool quando necessario e, se modifichi lo stato, usa set_replicas. "
+                "Al termine rispondi con un breve report operativo in JSON con campi: "
+                "deployment, action, reason, final_replicas. "
+                f"Deployment: {deployment}. Namespace: {NAMESPACE}. "
+                f"Guardrail runtime: min_replicas={MIN_REPLICAS}, max_replicas={MAX_REPLICAS}. "
+                f"Osservazioni iniziali: rps={round(observed_rps, 6)}, current_replicas={observed_replicas}. "
+                "Se rps e' circa zero e current_replicas > min_replicas, preferisci scale down prudente."
+                + (
+                    f" Nota di riesame operativo: {reconsideration_note}"
+                    if reconsideration_note
+                    else ""
+                )
+            ),
+        },
     ]
 
-    if not deployments_list:
+    for step in range(1, MAX_TOOL_STEPS + 1):
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            tools=openai_tools,
+            tool_choice="auto",
+            temperature=LLM_TEMPERATURE,
+        )
+        assistant = response.choices[0].message
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": assistant.content or "",
+        }
+
+        tool_calls = assistant.tool_calls or []
+        if tool_calls:
+            assistant_msg["tool_calls"] = [tool_call.model_dump() for tool_call in tool_calls]
+        messages.append(assistant_msg)
+
+        if not tool_calls:
+            final_text = (assistant.content or "").strip()
+            log_event(
+                "info",
+                "Agent cycle completed",
+                deployment=deployment,
+                tool_steps=step,
+                assistant_message=final_text,
+            )
+            return final_text
+
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            raw_args = tool_call.function.arguments or "{}"
+            tool_args = json.loads(raw_args)
+
+            if tool_name not in tool_dispatch:
+                tool_output = {
+                    "ok": False,
+                    "error": f"Tool sconosciuto: {tool_name}",
+                }
+            else:
+                try:
+                    log_event(
+                        "info",
+                        "Executing tool",
+                        deployment=deployment,
+                        tool=tool_name,
+                        arguments=tool_args,
+                    )
+                    result = tool_dispatch[tool_name](**tool_args)
+                    tool_output = {"ok": True, "result": result}
+                except Exception as exc:
+                    log_event(
+                        "error",
+                        "Tool execution error",
+                        deployment=deployment,
+                        tool=tool_name,
+                        arguments=tool_args,
+                        error=str(exc),
+                    )
+                    tool_output = {"ok": False, "error": str(exc)}
+
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(tool_output, ensure_ascii=True),
+                }
+            )
+
+    timeout_report = (
+        f"{{\"deployment\": \"{deployment}\", \"action\": \"HOLD\", "
+        f"\"reason\": \"Max tool steps reached ({MAX_TOOL_STEPS})\", "
+        "\"final_replicas\": null}}"
+    )
+    log_event(
+        "warning",
+        "Agent cycle reached max steps",
+        deployment=deployment,
+        max_tool_steps=MAX_TOOL_STEPS,
+    )
+    return timeout_report
+
+
+def _load_kubernetes_config() -> None:
+    try:
+        config.load_incluster_config()
+        log_event("info", "Loaded in-cluster Kubernetes config")
+    except Exception:
+        config.load_kube_config()
+        log_event("warning", "Loaded local kube config as fallback")
+
+
+def run() -> None:
+    _load_kubernetes_config()
+    apps_api = client.AppsV1Api()
+
+    deployments = [item.strip() for item in TARGET_DEPLOYMENTS.split(",") if item.strip()]
+    if not deployments:
         raise RuntimeError("TARGET_DEPLOYMENTS is empty after parsing")
 
-    log_event(
-        logging.INFO,
-        "Scaling agent started",
+    global RUNTIME_CONTEXT
+    global ALLOWED_DEPLOYMENTS
+    RUNTIME_CONTEXT = RuntimeContext(
+        apps_api=apps_api,
         namespace=NAMESPACE,
-        target_deployments=deployments_list,
+        prometheus_url=PROMETHEUS_URL,
+    )
+    ALLOWED_DEPLOYMENTS = set(deployments)
+
+    llm_client = _build_openai_client()
+    openai_tools = _build_openai_tools()
+    tool_dispatch = _build_tool_dispatch()
+
+    log_event(
+        "info",
+        "MCP autonomous scaling agent started",
+        namespace=NAMESPACE,
+        target_deployments=deployments,
         check_interval=CHECK_INTERVAL,
         promql_rps_query=PROMQL_RPS_QUERY,
-        scale_up_threshold=SCALE_UP_THRESHOLD,
-        scale_down_threshold=SCALE_DOWN_THRESHOLD,
-        llm_api_url=LLM_API_URL,
+        llm_api_url=_normalize_openai_base_url(LLM_API_URL),
         llm_model=LLM_MODEL,
         min_replicas=MIN_REPLICAS,
         max_replicas=MAX_REPLICAS,
     )
 
     while True:
-        try:
-            rps = get_rps(PROMETHEUS_URL)
-            log_event(
-                logging.INFO,
-                "Observed global load",
-                rps=round(rps, 4),
-            )
+        for deployment in deployments:
+            try:
+                observed_rps = get_rps()
+                observed_replicas = get_current_replicas(deployment=deployment)
 
-            for deployment in deployments_list:
-                try:
-                    current_replicas = get_current_replicas(apps_api, NAMESPACE, deployment)
+                report = _run_deployment_agent_cycle(
+                    llm_client=llm_client,
+                    deployment=deployment,
+                    observed_rps=observed_rps,
+                    observed_replicas=observed_replicas,
+                    openai_tools=openai_tools,
+                    tool_dispatch=tool_dispatch,
+                )
 
+                final_replicas = get_current_replicas(deployment=deployment)
+                if observed_rps <= AGENT_IDLE_RPS_HINT and final_replicas >= MAX_REPLICAS:
                     log_event(
-                        logging.INFO,
-                        "Analyzing deployment",
+                        "warning",
+                        "High replicas during low traffic detected; requesting agent reconsideration",
                         deployment=deployment,
-                        rps=round(rps, 4),
-                        current_replicas=current_replicas,
+                        observed_rps=round(observed_rps, 6),
+                        idle_hint_threshold=AGENT_IDLE_RPS_HINT,
+                        current_replicas=final_replicas,
+                        max_replicas=MAX_REPLICAS,
                     )
 
-                    action, reason = decide_scaling_action_with_llm(
-                        deployment,
-                        rps,
-                        current_replicas,
-                    )
-
-                    log_event(
-                        logging.INFO,
-                        "LLM scaling decision",
+                    report = _run_deployment_agent_cycle(
+                        llm_client=llm_client,
                         deployment=deployment,
-                        action=action,
-                        reason=reason,
-                        rps=round(rps, 4),
-                        current_replicas=current_replicas,
+                        observed_rps=observed_rps,
+                        observed_replicas=final_replicas,
+                        openai_tools=openai_tools,
+                        tool_dispatch=tool_dispatch,
+                        reconsideration_note=(
+                            "Il deployment e' rimasto a max_replicas con traffico basso. "
+                            "Riesamina e giustifica esplicitamente HOLD oppure applica set_replicas "
+                            "per ridurre in sicurezza."
+                        ),
                     )
 
-                    desired_replicas = current_replicas
-
-                    if action == "SCALE_UP" and current_replicas < MAX_REPLICAS:
-                        desired_replicas = current_replicas + 1
-                        set_replicas(apps_api, NAMESPACE, deployment, desired_replicas)
-                        log_event(
-                            logging.INFO,
-                            "Scaling up",
-                            deployment=deployment,
-                            rps=round(rps, 4),
-                            llm_reason=reason,
-                            from_replicas=current_replicas,
-                            to_replicas=desired_replicas,
-                        )
-                    elif action == "SCALE_DOWN" and current_replicas > MIN_REPLICAS:
-                        desired_replicas = current_replicas - 1
-                        set_replicas(apps_api, NAMESPACE, deployment, desired_replicas)
-                        log_event(
-                            logging.INFO,
-                            "Scaling down",
-                            deployment=deployment,
-                            rps=round(rps, 4),
-                            llm_reason=reason,
-                            from_replicas=current_replicas,
-                            to_replicas=desired_replicas,
-                        )
-                    elif action == "SCALE_UP" and current_replicas >= MAX_REPLICAS:
-                        log_event(
-                            logging.INFO,
-                            "No scaling action",
-                            deployment=deployment,
-                            reason="LLM requested scale up but max replicas already reached",
-                            rps=round(rps, 4),
-                            replicas=current_replicas,
-                        )
-                    elif action == "SCALE_DOWN" and current_replicas <= MIN_REPLICAS:
-                        log_event(
-                            logging.INFO,
-                            "No scaling action",
-                            deployment=deployment,
-                            reason="LLM requested scale down but min replicas already reached",
-                            rps=round(rps, 4),
-                            replicas=current_replicas,
-                        )
-                    else:
-                        log_event(
-                            logging.INFO,
-                            "No scaling action",
-                            deployment=deployment,
-                            reason=reason,
-                            rps=round(rps, 4),
-                            replicas=current_replicas,
-                        )
-                except Exception as exc:
-                    log_event(
-                        logging.ERROR,
-                        "Deployment scaling error",
-                        deployment=deployment,
-                        error=str(exc),
-                    )
-                finally:
-                    time.sleep(2)
-
-        except Exception as exc:
-            log_event(logging.ERROR, "Scaling loop error", error=str(exc))
+                log_event(
+                    "info",
+                    "Deployment cycle report",
+                    deployment=deployment,
+                    report=report,
+                    observed_rps=round(observed_rps, 6),
+                )
+            except Exception as exc:
+                log_event(
+                    "error",
+                    "Deployment cycle error",
+                    deployment=deployment,
+                    error=str(exc),
+                )
+            finally:
+                time.sleep(2)
 
         time.sleep(CHECK_INTERVAL)
 

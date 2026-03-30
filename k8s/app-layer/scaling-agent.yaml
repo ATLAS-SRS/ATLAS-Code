@@ -61,16 +61,16 @@ spec:
               value: sum(rate(http_requests_total{job="api-gateway"}[1m]))
             - name: CHECK_INTERVAL
               value: "15"
-            - name: SCALE_UP_THRESHOLD
-              value: "50"
-            - name: SCALE_DOWN_THRESHOLD
-              value: "10"
             - name: MIN_REPLICAS
               value: "1"
             - name: MAX_REPLICAS
               value: "5"
+            - name: AGENT_IDLE_RPS_HINT
+              value: "0.05"
+            - name: RPS_REPLICA_THRESHOLDS
+              value: "5,15,30,60"
             - name: LLM_API_URL
-              value: http://host.docker.internal:1234/v1/chat/completions
+              value: http://host.docker.internal:1234/v1
             - name: LLM_MODEL
               value: qwen/qwen2.5-coder-14b
             - name: LLM_TIMEOUT

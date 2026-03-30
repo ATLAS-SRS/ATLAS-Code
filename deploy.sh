@@ -320,8 +320,8 @@ Endpoints (tramite NGINX Ingress & nip.io):
   Prometheus:    http://prometheus.127.0.0.1.nip.io
 
 Credenziali Grafana:
-  User: admin
-  Pass: \$(kubectl get secret -n ${NAMESPACE} atlas-monitoring-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode)
+  User: admin 
+  Password: ${GRAFANA_ADMIN_PASSWORD}
 EOF
 }
 
