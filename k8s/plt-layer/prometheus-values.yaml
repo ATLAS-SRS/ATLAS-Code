@@ -3,7 +3,7 @@ prometheus:
     enabled: true
     ingressClassName: nginx
     hosts:
-      - prometheus.atlas.local
+      - prometheus.127.0.0.1.nip.io
 
 nodeExporter:
   enabled: false

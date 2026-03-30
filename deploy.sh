@@ -234,6 +234,7 @@ deploy_plt() {
   helm upgrade --install atlas-monitoring prometheus-community/kube-prometheus-stack \
     --namespace "$NAMESPACE" \
     --create-namespace \
+    --set "grafana.adminPassword=${GRAFANA_ADMIN_PASSWORD}" \
     -f "${PLT_LAYER_DIR}/grafana-values.yaml" \
     -f "${PLT_LAYER_DIR}/prometheus-values.yaml"
 
@@ -284,6 +285,8 @@ deploy_locust() {
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/locust-configmap.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
+  # Aggiunta dell'Ingress per Locust
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-ingress.yaml"
 
   log "Waiting for Locust rollouts"
   kubectl rollout status deploy/locust-master -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
@@ -310,22 +313,25 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/scaling-agent --tail=100
 
-Locust Load Testing:
-  kubectl port-forward svc/locust-master-ui 8089:8089 -n ${NAMESPACE}
-  http://localhost:8089
-  host: http://api-gateway:8000
-  
-Monitoring & Observability:
-  Grafana UI:
-    kubectl port-forward svc/atlas-monitoring-grafana 3000:80 -n ${NAMESPACE}
-    http://localhost:3000
-    User: admin
-    Pass: \$(kubectl get secret -n ${NAMESPACE} atlas-monitoring-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode)
+Endpoints (tramite NGINX Ingress & nip.io):
+  API Gateway:   http://fraud-api.127.0.0.1.nip.io
+  Locust UI:     http://locust.127.0.0.1.nip.io
+  Grafana UI:    http://grafana.127.0.0.1.nip.io
+  Prometheus:    http://prometheus.127.0.0.1.nip.io
+
+Credenziali Grafana:
+  User: admin
+  Pass: \$(kubectl get secret -n ${NAMESPACE} atlas-monitoring-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode)
 EOF
 }
 
 main() {
   parse_args "$@"
+
+  if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+    echo "ERROR: GRAFANA_ADMIN_PASSWORD non impostata o vuota. Esporta la variabile prima di eseguire ./deploy.sh." >&2
+    exit 1
+  fi
 
   require_cmd kubectl
 

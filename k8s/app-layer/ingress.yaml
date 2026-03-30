@@ -11,7 +11,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: fraud-api.local
+    - host: fraud-api.127.0.0.1.nip.io
       http:
         paths:
           - path: /

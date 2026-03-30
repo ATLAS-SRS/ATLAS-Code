@@ -3,7 +3,7 @@ grafana:
     enabled: true
     ingressClassName: nginx
     hosts:
-      - grafana.atlas.local
+      - grafana.127.0.0.1.nip.io
   additionalDataSources:
     - name: Loki
       type: loki
