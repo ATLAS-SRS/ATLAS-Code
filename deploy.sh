@@ -141,6 +141,7 @@ build_images() {
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
   docker build -t atlas/scaling-agent:latest -f scaling-agent/Dockerfile scaling-agent/
+  docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
 
   log "Docker images built successfully"
 }
@@ -167,7 +168,7 @@ deploy_data_layer() {
         --create-namespace \
         -f "${DATA_LAYER_DIR}/kafka-values.yaml"
     else
-      echo "$kafka_output" >&2
+      echo "$kafka_output" >&2kubectl delete job kafka-connector-setup -n "$NAMESPACE" --ignore-not-found
       exit 1
     fi
   fi
@@ -177,13 +178,56 @@ deploy_data_layer() {
     --create-namespace \
     -f "${DATA_LAYER_DIR}/redis-values.yaml"
 
+  kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/postgres-init-configmap.yaml"
+
+  helm upgrade --install atlas-postgres bitnami/postgresql \
+    --namespace "$NAMESPACE" \
+    --create-namespace \
+    --set "auth.postgresPassword=${POSTGRES_PASSWORD}" \
+    --set "auth.database=atlas_db" \
+    --set "primary.initdb.scriptsConfigMap=postgres-init-scripts"
+
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/schema-registry.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/kafka-connect.yaml"
 
   log "Waiting for data layer rollouts"
   kubectl rollout status statefulset/atlas-kafka-controller -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
   kubectl rollout status statefulset/atlas-redis-master -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
   kubectl rollout status deploy/schema-registry -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  kubectl rollout status statefulset/atlas-postgres-postgresql -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  kubectl rollout status deploy/kafka-connect -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  
+  kubectl delete job kafka-connector-setup -n "$NAMESPACE" --ignore-not-found
+  
+  cat <<EOF | kubectl apply -n "$NAMESPACE" -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-connector-sink-config
+data:
+  sink-config.json: |
+    {
+      "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+      "tasks.max": "1",
+      "topics": "scored-transactions",
+      "connection.url": "jdbc:postgresql://atlas-postgres-postgresql.default.svc.cluster.local:5432/atlas_db",
+      "connection.user": "postgres",
+      "connection.password": "${POSTGRES_PASSWORD}",
+      "table.name.format": "transactions_history",
+      "insert.mode": "upsert",
+      "pk.mode": "record_value",
+      "pk.fields": "transaction_id",
+      "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+      "value.converter": "io.confluent.connect.avro.AvroConverter",
+      "value.converter.schema.registry.url": "http://schema-registry.default.svc.cluster.local:8081",
+      "auto.create": "false",
+      "auto.evolve": "false"
+    }
+EOF
 
+  kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/kafka-connector-setup-job.yaml"
+  kubectl wait --for=condition=complete job/kafka-connector-setup -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+  
   log "Data layer deployed"
 }
 
@@ -321,7 +365,13 @@ Endpoints (tramite NGINX Ingress & nip.io):
 
 Credenziali Grafana:
   User: admin
-  Pass: \$(kubectl get secret -n ${NAMESPACE} atlas-monitoring-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 --decode)
+  Password: ${GRAFANA_ADMIN_PASSWORD}
+
+Credenziali PostgreSQL:
+  User: postgres
+  Password: ${POSTGRES_PASSWORD}
+  Database: atlas_db
+
 EOF
 }
 
@@ -330,6 +380,11 @@ main() {
 
   if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
     echo "ERROR: GRAFANA_ADMIN_PASSWORD non impostata o vuota. Esporta la variabile prima di eseguire ./deploy.sh." >&2
+    exit 1
+  fi
+
+  if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
+    echo "ERROR: POSTGRES_PASSWORD non impostata o vuota. Esporta la variabile prima di eseguire ./deploy.sh." >&2
     exit 1
   fi
 

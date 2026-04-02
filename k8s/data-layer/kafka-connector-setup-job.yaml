@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-connector-setup
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-kafka-connect
+          image: curlimages/curl:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              while [ "$(curl -s -o /dev/null -w "%{http_code}" http://kafka-connect-service.default.svc.cluster.local:8083/connectors)" != "200" ]; do
+                echo "Waiting for Kafka Connect API..."
+                sleep 2
+              done
+      containers:
+        - name: register-jdbc-sink
+          image: curlimages/curl:latest
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: sink-config
+              mountPath: /config
+              readOnly: true
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              curl -s -X PUT -H 'Content-Type: application/json' \
+              --data @/config/sink-config.json \
+              http://kafka-connect-service.default.svc.cluster.local:8083/connectors/jdbc-postgres-sink-transactions/config
+      volumes:
+        - name: sink-config
+          configMap:
+            name: kafka-connector-sink-config
