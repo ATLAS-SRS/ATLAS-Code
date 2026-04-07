@@ -148,65 +148,37 @@ docker compose up -d --build --scale transaction-client=0
 
 ## Scaling Agent
 
-The platform currently supports two operational scaling runtimes:
+The platform now uses a single all-in-one scaling runtime.
 
-### Kubernetes Central Orchestrator (single loop)
-- Runs from `scaling-agent/agent.py` (container entrypoint in `scaling-agent/Dockerfile`)
-- Uses gateway ingress traffic as global load indicator via Prometheus query:
-  `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
-- Applies one global RPS reading to all pipeline services
-- Scales deployments sequentially in one loop (default order):
-  `api-gateway,scoring-system,enrichment-system,notification-system`
-- Adds a short pause between deployment decisions to avoid LLM API bursts
+### All-in-One Kubernetes MCP Agent
+- Runs from `scaling-agent/mcp_client.py` and is started by `scaling-agent/Dockerfile`
+- Spawns `scaling-agent/mcp_server.py` locally over stdio in the same container
+- Reads global ingress load from Prometheus using `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
+- Applies one global RPS reading to the configured deployment set
+- Scales deployments sequentially in one loop with the default order `api-gateway,scoring-system,enrichment-system,notification-system`
 
 Key environment variables:
-- `TARGET_DEPLOYMENTS` (default: `api-gateway,scoring-system,enrichment-system,notification-system`)
-- `PROMQL_RPS_QUERY` (default: gateway-only query above)
-- `CHECK_INTERVAL`, `MIN_REPLICAS`, `MAX_REPLICAS`, `LLM_API_URL`, `LLM_MODEL`
+- `TARGET_DEPLOYMENTS`
+- `PROMQL_RPS_QUERY`
+- `CHECK_INTERVAL`, `MIN_REPLICAS`, `MAX_REPLICAS`, `NAMESPACE`
+- `LM_STUDIO_URL`, `LLM_API_URL`, `LLM_MODEL`
+- `MAX_TOOL_STEPS`, `RPS_REPLICA_THRESHOLDS`
 
-### Compose Daemon + MCP Runtime
-- Runs from `scaling-agent/scaling_server.py`
-- Exposes HTTP endpoints and MCP tools for operator workflows
-- Uses deterministic rules with optional LM Studio assistance
-
-### MCP Tools Available
-- `get_current_metrics`: System performance data
-- `check_scaling_decision`: AI-powered scaling recommendations
-- `scale_kafka_consumer`: Manual scaling control
-- `update_scaling_thresholds`: Adjust scaling parameters
+### MCP Tools
+- `get_rps`: read the global RPS from Prometheus
+- `get_current_replicas`: read deployment replica count from Kubernetes
+- `set_replicas`: update deployment replicas within guardrails
+- `get_scaling_recommendation`: combine current load and replica state into a target action
 
 ### LM Studio Support
-- `LLM_ENABLED=true` enables local-model reasoning via LM Studio's OpenAI-compatible API
-- `/decision` exposes `llm_decision`, `rule_based_decision`, `effective_decision`, `decision_source`, and `llm_status`
-- Unsafe, low-confidence, or invalid model output falls back to deterministic rules
-- In the root Docker stack, the scaling daemon is started by `docker compose` and targets `enrichment-system` by default; override `TARGET_SERVICE` if you want to scale a different service
+- `LM_STUDIO_URL` points to the OpenAI-compatible local model server
+- The Kubernetes manifest uses `http://host.docker.internal:1234/v1` in Docker Desktop
+- Invalid model output is handled safely inside the client loop
 
-For Kubernetes central orchestration (`agent.py`), configure `LLM_API_URL` and `LLM_MODEL` in `k8s/app-layer/scaling-agent.yaml`.
-
-```bash
-# Enable LM Studio-backed orchestration in the scaling agent
-LLM_ENABLED=true docker compose up --build
-```
-
-### Automated Operation
-```bash
-# The autoscaling daemon starts automatically in Docker Compose.
-# Optional local diagnostic watcher:
-cd scaling-agent
-python auto_scaler.py
-```
-
-### Operator MCP Mode
-```bash
-# Manual MCP usage for operators/SRE workflows
-cd scaling-agent
-SCALING_MODE=stdio python scaling_server.py
-```
-
-### Scaling Agent Tests
-```bash
-docker compose run --rm --entrypoint pytest scaling-agent -o cache_dir=/tmp/pytest-cache /workspace/scaling-agent/tests
-```
+### Development
+- Update `scaling-agent/mcp_server.py` when you need new tools
+- Update `scaling-agent/mcp_client.py` when you need to change the reasoning loop or tool execution flow
+- Update `k8s/app-layer/k8s-agent.yaml` when you need to change deployment-time configuration
 
 ## Monitoring & Observability
 
@@ -237,10 +209,10 @@ atlas-code/
 ```
 
 ### Adding New Features
-1. Define MCP tools in `scaling-agent/scaling_server.py`
-2. Update Docker Compose for new services
-3. Add Prometheus metrics for monitoring
-4. Update scaling logic as needed
+1. Define MCP tools in `scaling-agent/mcp_server.py`
+2. Update `scaling-agent/mcp_client.py` if the reasoning loop or tool schema changes
+3. Update `k8s/app-layer/k8s-agent.yaml` for runtime configuration changes
+4. Add Prometheus metrics for new scaling signals as needed
 
 ## Operational Safety
 

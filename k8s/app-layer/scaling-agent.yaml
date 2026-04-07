@@ -69,7 +69,7 @@ spec:
               value: "0.05"
             - name: RPS_REPLICA_THRESHOLDS
               value: "5,15,30,60"
-            - name: LLM_API_URL
+            - name: LM_STUDIO_URL
               value: http://host.docker.internal:1234/v1
             - name: LLM_MODEL
               value: qwen/qwen2.5-coder-14b

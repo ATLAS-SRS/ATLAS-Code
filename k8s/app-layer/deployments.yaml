@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -75,7 +75,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -149,7 +149,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -285,14 +285,29 @@ spec:
         app.kubernetes.io/part-of: fraud-detection
         app.kubernetes.io/component: compute-layer
     spec:
+      initContainers:
+        - name: wait-for-locust-master
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until nslookup locust-master.default.svc.cluster.local >/dev/null 2>&1; do
+                echo "Waiting for locust-master DNS to become available..."
+                sleep 2
+              done
       containers:
         - name: locust-worker
           image: locustio/locust:latest
           imagePullPolicy: IfNotPresent
-          command: ["locust", "-f", "/mnt/locust/locustfile.py", "--worker"]
-          env:
-            - name: LOCUST_MASTER_NODE_HOST
-              value: locust-master
+          command:
+            - locust
+            - -f
+            - /mnt/locust/locustfile.py
+            - --worker
+            - --master-host
+            - locust-master.default.svc.cluster.local
           volumeMounts:
             - name: locust-script
               mountPath: /mnt/locust
@@ -311,7 +326,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:

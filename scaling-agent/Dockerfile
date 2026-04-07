@@ -2,11 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Copy application code
-COPY . .
+RUN pip install --no-cache-dir kubernetes openai mcp fastmcp requests
 
-CMD ["python", "-u", "agent.py"]
+COPY mcp_server.py mcp_client.py structured_logger.py ./
+
+CMD ["python", "-u", "mcp_client.py"]
