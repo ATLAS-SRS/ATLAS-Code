@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -39,10 +39,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 128Mi
             limits:
               cpu: 500m
-              memory: 1Gi
+              memory: 512Gi
           startupProbe:
             httpGet:
               path: /health/live
@@ -75,7 +75,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -149,7 +149,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -251,6 +251,10 @@ spec:
           image: locustio/locust:latest
           imagePullPolicy: IfNotPresent
           command: ["locust", "-f", "/mnt/locust/locustfile.py", "--master", "--host", "http://api-gateway:8000"]
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
           ports:
             - name: web-ui
               containerPort: 8089
@@ -274,7 +278,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: locust-worker
@@ -311,7 +315,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
 spec:
-  replicas: 2
+  replicas: 1
   revisionHistoryLimit: 3
   selector:
     matchLabels:

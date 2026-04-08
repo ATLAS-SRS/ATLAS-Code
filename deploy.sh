@@ -184,8 +184,7 @@ deploy_data_layer() {
     --namespace "$NAMESPACE" \
     --create-namespace \
     --set "auth.postgresPassword=${POSTGRES_PASSWORD}" \
-    --set "auth.database=atlas_db" \
-    --set "primary.initdb.scriptsConfigMap=postgres-init-scripts"
+    -f "${DATA_LAYER_DIR}/postgres-values.yaml"
 
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/schema-registry.yaml"
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/kafka-connect.yaml"
@@ -326,7 +325,7 @@ deploy_ingress_controller() {
 deploy_locust() {
   log "Deploying Locust manifests"
 
-  kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/locust-configmap.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-configmap.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   # Aggiunta dell'Ingress per Locust

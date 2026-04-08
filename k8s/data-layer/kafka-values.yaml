@@ -11,8 +11,15 @@ zookeeper:
 
 controller:
   replicaCount: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
   persistence:
-    size: 2Gi
+    size: 1Gi
   overrideConfiguration:
     offsets.topic.replication.factor: "1"
     transaction.state.log.replication.factor: "1"
@@ -22,14 +29,31 @@ controller:
 
 broker:
   replicaCount: 1
+  heapOpts: "-Xms512m -Xmx512m"
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1024Mi"
   persistence:
-    size: 5Gi
+    size: 2Gi
+
   overrideConfiguration:
     offsets.topic.replication.factor: "1"
     transaction.state.log.replication.factor: "1"
     transaction.state.log.min.isr: "1"
     default.replication.factor: "1"
     min.insync.replicas: "1"
+
+metrics:
+  enabled: true
+  kafkaExporter:
+    enabled: true
+    resources:
+      limits:
+        memory: "128Mi"
 
 listeners:
   client:

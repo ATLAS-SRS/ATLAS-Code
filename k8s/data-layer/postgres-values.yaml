@@ -1,0 +1,35 @@
+# k8s/data-layer/postgres-values.yaml
+
+global:
+  postgresql:
+    auth:
+      database: "atlas_db"
+
+primary:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  extendedConfiguration: |
+    max_connections = 50
+    shared_buffers = 128MB
+    work_mem = 4MB
+
+  persistence:
+    enabled: true
+    size: 2Gi
+
+  initdb:
+    scriptsConfigMap: "postgres-init-scripts"
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+  resources:
+    limits:
+      memory: "128Mi"

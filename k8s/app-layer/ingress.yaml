@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/part-of: fraud-detection
     app.kubernetes.io/component: compute-layer
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
 spec:
   ingressClassName: nginx
   rules:
@@ -21,3 +21,13 @@ spec:
                 name: api-gateway
                 port:
                   number: 8000
+    - host: locust.127.0.0.1.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: locust-master-ui
+                port:
+                  number: 8089

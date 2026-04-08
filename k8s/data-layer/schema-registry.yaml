@@ -14,7 +14,6 @@ spec:
     spec:
       containers:
         - name: schema-registry
-          # Usiamo Bitnami, più stabile per i test locali
           image: bitnamilegacy/schema-registry:7.5.0 
           ports:
             - containerPort: 8081

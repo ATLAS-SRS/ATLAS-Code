@@ -5,5 +5,27 @@ prometheus:
     hosts:
       - prometheus.127.0.0.1.nip.io
 
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1024Mi"
+
+    retention: 1d
+    retentionSize: "1GB"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
 nodeExporter:
   enabled: false
+kubeStateMetrics:
+  enabled: true

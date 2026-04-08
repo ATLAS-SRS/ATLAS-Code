@@ -1,7 +1,28 @@
 architecture: standalone
+
 auth:
   enabled: false
+
 master:
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+  configmap: |
+    maxmemory 200mb
+    maxmemory-policy allkeys-lru
+    appendonly yes
   persistence:
     enabled: true
     size: 2Gi
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+  resources:
+    limits:
+      memory: "64Mi"
