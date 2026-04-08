@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from typing import TextIO
 
 
 class JSONFormatter(logging.Formatter):
@@ -51,16 +52,18 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def get_logger(service_name: str) -> logging.Logger:
+def get_logger(service_name: str, stream: TextIO = sys.stdout) -> logging.Logger:
     logger = logging.getLogger(service_name)
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
     for handler in logger.handlers:
         if getattr(handler, "_is_structured", False):
+            if getattr(handler, "stream", None) is not stream:
+                handler.stream = stream
             return logger
 
-    handler = logging.StreamHandler(stream=sys.stdout)
+    handler = logging.StreamHandler(stream=stream)
     handler.setFormatter(JSONFormatter())
     handler._is_structured = True
 

@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
 PLT_LAYER_DIR="${SCRIPT_DIR}/k8s/plt-layer"
 APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
-SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-services.yaml"
 SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
 
 usage() {
@@ -140,7 +140,8 @@ build_images() {
   docker build -t atlas/enrichment-system:latest -f enrichment-system/Dockerfile enrichment-system/
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
-  docker build -t atlas/scaling-agent:latest -f scaling-agent/Dockerfile scaling-agent/
+  docker build -t atlas-aiops-agent:latest -f scaling-agent/Dockerfile scaling-agent/
+  docker tag atlas-aiops-agent:latest atlas/scaling-agent:latest
   docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
 
   log "Docker images built successfully"
@@ -168,7 +169,8 @@ deploy_data_layer() {
         --create-namespace \
         -f "${DATA_LAYER_DIR}/kafka-values.yaml"
     else
-      echo "$kafka_output" >&2kubectl delete job kafka-connector-setup -n "$NAMESPACE" --ignore-not-found
+      echo "$kafka_output" >&2
+      kubectl delete job kafka-connector-setup -n "$NAMESPACE" --ignore-not-found
       exit 1
     fi
   fi
@@ -251,7 +253,7 @@ deploy_app_layer() {
   if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
     log "Deploying scaling-agent"
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
-    rollout_or_debug deployment scaling-agent "app=scaling-agent"
+    rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
   else
     log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
   fi
