@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-mcp-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-mcp-server
+  template:
+    metadata:
+      labels:
+        app: grafana-mcp-server
+    spec:
+      containers:
+        - name: mcp-server
+          image: mcp/grafana:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: GRAFANA_URL
+              value: "http://atlas-monitoring-grafana"
+            - name: GRAFANA_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-mcp-credentials
+                  key: token
+            - name: GRAFANA_ORG_ID
+              value: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-mcp-service
+  namespace: default
+spec:
+  selector:
+    app: grafana-mcp-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000

@@ -302,6 +302,55 @@ deploy_plt() {
 	log "Waiting for PLT rollouts"
 	rollout_or_debug deployment atlas-monitoring-grafana "app.kubernetes.io/name=grafana"
 
+	log "Generating Grafana Service Account Token for MCP server..."
+
+	# 1. Port-forward temporaneo in background
+    # Usiamo & per non bloccare lo script e catturiamo il PID per chiuderlo dopo
+    kubectl port-forward -n "$NAMESPACE" svc/atlas-monitoring-grafana 3000:80 >/dev/null 2>&1 &
+    local PF_PID=$!
+    
+    # Attendiamo che il port-forward sia attivo
+    sleep 5
+
+	local GRAFANA_API_URL="http://admin:${GRAFANA_ADMIN_PASSWORD}@localhost:3000/api"
+
+	# 2. Creazione Service Account (se non esiste già)
+    # Cerchiamo se esiste già un SA chiamato 'mcp-server'
+    local SA_ID=$(curl -s "$GRAFANA_API_URL/serviceaccounts/search?query=mcp-server" | jq -r '.serviceAccounts[0].id // empty')
+
+    if [[ -z "$SA_ID" ]]; then
+        log "Creating new Service Account 'mcp-server'"
+        SA_ID=$(curl -s -X POST "$GRAFANA_API_URL/serviceaccounts" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"mcp-server", "role": "Admin"}' | jq -r '.id')
+    fi
+
+    # 3. Generazione di un nuovo Token
+    # Nota: I token di Grafana non sono recuperabili dopo la creazione, 
+    # quindi ne creiamo uno nuovo e aggiorniamo il secret.
+    log "Generating new API Token..."
+    local NEW_TOKEN=$(curl -s -X POST "$GRAFANA_API_URL/serviceaccounts/$SA_ID/tokens" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"mcp-token-'"$(date +%s)"'"}' | jq -r '.key')
+
+    # 4. Aggiornamento Secret Kubernetes
+    kubectl create secret generic grafana-mcp-credentials \
+        --namespace "$NAMESPACE" \
+        --from-literal=token="$NEW_TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # Chiudiamo il port-forward
+    kill $PF_PID
+    log "Grafana MCP credentials secret updated."
+
+	log "Deploying Grafana MCP Server..."
+
+    kubectl apply -n "$NAMESPACE" -f "${PLT_LAYER_DIR}/grafana-mcp.yaml"
+    
+    # Attendi che il server MCP sia pronto
+    rollout_or_debug deployment grafana-mcp-server "app.kubernetes.io/name=grafana-mcp-server"
+    # --- FINE AUTOMAZIONE TOKEN MCP ---
+
 	local prom_sts=""
 	prom_sts=$(kubectl get statefulset -n "$NAMESPACE" \
 		-l "release=atlas-monitoring,app.kubernetes.io/name=prometheus" \
