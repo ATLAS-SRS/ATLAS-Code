@@ -247,7 +247,7 @@ services:
     logging: *default-logging
 
   scaling-agent:
-    build: ./scaling-agent
+    build: ./agents-orchestrator
     container_name: scaling-agent
     ports:
       - "8001:8001"
@@ -262,8 +262,10 @@ services:
       - SCALING_METRICS_PORT=8002
       - TARGET_SERVICE=${TARGET_SERVICE:-enrichment-system}
       - LLM_ENABLED=${LLM_ENABLED:-true}
+      - LLM_API_URL=${LLM_API_URL:-http://host.docker.internal:1234/v1}
+      - LLM_MODEL=${LLM_MODEL:-google/gemma-3-12b}
       - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
-      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-google/gemma-3-12b}
       - LMSTUDIO_API_KEY=${LMSTUDIO_API_KEY:-}
       - CHECK_INTERVAL_SEC=${CHECK_INTERVAL_SEC:-60}
       - SCALE_COOLDOWN_SEC=${SCALE_COOLDOWN_SEC:-300}

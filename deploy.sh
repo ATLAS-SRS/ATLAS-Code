@@ -14,8 +14,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
 PLT_LAYER_DIR="${SCRIPT_DIR}/k8s/plt-layer"
 APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
-SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-services.yaml"
+DEFAULT_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+KIND_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+SCALING_AGENT_MANIFEST="${DEFAULT_SCALING_AGENT_MANIFEST}"
 SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
+CLUSTER_PROFILE="unknown"
 
 usage() {
   cat <<'EOF'
@@ -133,6 +136,39 @@ ensure_namespace() {
   fi
 }
 
+service_monitor_crd_exists() {
+  kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1
+}
+
+detect_cluster_profile() {
+  local current_context
+
+  current_context="$(kubectl config current-context 2>/dev/null || true)"
+
+  case "$current_context" in
+    kind-*)
+      CLUSTER_PROFILE="kind"
+      SCALING_AGENT_MANIFEST="$KIND_SCALING_AGENT_MANIFEST"
+      ;;
+    docker-desktop|docker-desktop-*)
+      CLUSTER_PROFILE="docker-desktop"
+      SCALING_AGENT_MANIFEST="$DEFAULT_SCALING_AGENT_MANIFEST"
+      ;;
+    *)
+      CLUSTER_PROFILE="generic"
+      SCALING_AGENT_MANIFEST="$DEFAULT_SCALING_AGENT_MANIFEST"
+      ;;
+  esac
+
+  if [[ "$CLUSTER_PROFILE" == "kind" && ! -f "$SCALING_AGENT_MANIFEST" ]]; then
+    log "Kind manifest not found at ${SCALING_AGENT_MANIFEST}, falling back to ${DEFAULT_SCALING_AGENT_MANIFEST}"
+    SCALING_AGENT_MANIFEST="$DEFAULT_SCALING_AGENT_MANIFEST"
+  fi
+
+  log "Detected cluster profile ${CLUSTER_PROFILE} (context: ${current_context:-unknown})"
+  log "Using scaling-agent manifest ${SCALING_AGENT_MANIFEST}"
+}
+
 build_images() {
   log "Building Docker images"
 
@@ -140,8 +176,7 @@ build_images() {
   docker build -t atlas/enrichment-system:latest -f enrichment-system/Dockerfile enrichment-system/
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
-  docker build -t atlas-aiops-agent:latest -f scaling-agent/Dockerfile scaling-agent/
-  docker tag atlas-aiops-agent:latest atlas/scaling-agent:latest
+  docker build -t atlas/scaling-agent:latest -f agents-orchestrator/Dockerfile agents-orchestrator/
   docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
 
   log "Docker images built successfully"
@@ -155,10 +190,22 @@ deploy_data_layer() {
   helm repo add bitnami https://charts.bitnami.com/bitnami >/dev/null 2>&1 || true
   helm repo update >/dev/null
 
+  local kafka_helm_args=()
+  local redis_helm_args=()
+  local postgres_helm_args=()
+
+  if ! service_monitor_crd_exists; then
+    log "ServiceMonitor CRD not found; disabling chart metrics until monitoring CRDs are installed"
+    kafka_helm_args+=(--set "metrics.enabled=false" --set "metrics.kafkaExporter.enabled=false")
+    redis_helm_args+=(--set "metrics.enabled=false" --set "metrics.serviceMonitor.enabled=false")
+    postgres_helm_args+=(--set "metrics.enabled=false" --set "metrics.serviceMonitor.enabled=false")
+  fi
+
   local kafka_output=""
   if ! kafka_output=$(helm upgrade --install atlas-kafka bitnami/kafka \
       --namespace "$NAMESPACE" \
       --create-namespace \
+      "${kafka_helm_args[@]}" \
       -f "${DATA_LAYER_DIR}/kafka-values.yaml" 2>&1); then
     if [[ "$IMMUTABLE_RECOVERY" == true ]] && [[ "$kafka_output" == *"Forbidden: updates to statefulset spec"* ]]; then
       log "Kafka upgrade failed due to immutable StatefulSet fields. Applying safe recovery."
@@ -167,6 +214,7 @@ deploy_data_layer() {
       helm upgrade --install atlas-kafka bitnami/kafka \
         --namespace "$NAMESPACE" \
         --create-namespace \
+        "${kafka_helm_args[@]}" \
         -f "${DATA_LAYER_DIR}/kafka-values.yaml"
     else
       echo "$kafka_output" >&2
@@ -178,6 +226,7 @@ deploy_data_layer() {
   helm upgrade --install atlas-redis bitnami/redis \
     --namespace "$NAMESPACE" \
     --create-namespace \
+    "${redis_helm_args[@]}" \
     -f "${DATA_LAYER_DIR}/redis-values.yaml"
 
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/postgres-init-configmap.yaml"
@@ -186,6 +235,7 @@ deploy_data_layer() {
     --namespace "$NAMESPACE" \
     --create-namespace \
     --set "auth.postgresPassword=${POSTGRES_PASSWORD}" \
+    "${postgres_helm_args[@]}" \
     -f "${DATA_LAYER_DIR}/postgres-values.yaml"
 
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/schema-registry.yaml"
@@ -240,8 +290,10 @@ deploy_app_layer() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
 
-  if [[ -f "$SERVICEMONITORS_MANIFEST" ]]; then
+  if [[ -f "$SERVICEMONITORS_MANIFEST" ]] && service_monitor_crd_exists; then
     kubectl apply -n "$NAMESPACE" -f "$SERVICEMONITORS_MANIFEST"
+  elif [[ -f "$SERVICEMONITORS_MANIFEST" ]]; then
+    log "ServiceMonitor CRD not available; skipping ${SERVICEMONITORS_MANIFEST}"
   fi
 
   log "Waiting for app rollouts"
@@ -255,7 +307,7 @@ deploy_app_layer() {
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
     rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
   else
-    log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
+    log "Scaling-agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
   fi
 
   log "App layer deployed"
@@ -308,6 +360,72 @@ deploy_plt() {
   log "PLT stack deployed"
 }
 
+deploy_grafana_mcp() {
+  log "Deploying Grafana MCP Server"
+
+  require_cmd curl
+  require_cmd jq
+
+  kubectl rollout status deploy/atlas-monitoring-grafana -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+  kubectl port-forward -n "$NAMESPACE" svc/atlas-monitoring-grafana 3000:80 >/dev/null 2>&1 &
+  local pf_pid=$!
+
+  cleanup_port_forward() {
+    if [[ -n "${pf_pid:-}" ]]; then
+      kill "$pf_pid" >/dev/null 2>&1 || true
+    fi
+  }
+  trap cleanup_port_forward RETURN
+
+  local grafana_api_url="http://admin:${GRAFANA_ADMIN_PASSWORD}@127.0.0.1:3000/api"
+  local sa_id=""
+
+  for _ in $(seq 1 20); do
+    if sa_id=$(curl -fsS "$grafana_api_url/serviceaccounts/search?query=mcp-server" | jq -r '.serviceAccounts[0].id // empty'); then
+      if [[ -n "$sa_id" ]]; then
+        break
+      fi
+    fi
+    sleep 2
+  done
+
+  if [[ -z "$sa_id" ]]; then
+    log "Creating new Grafana service account mcp-server"
+    sa_id=$(curl -fsS -X POST "$grafana_api_url/serviceaccounts" \
+      -H "Content-Type: application/json" \
+      -d '{"name":"mcp-server", "role": "Admin"}' | jq -r '.id')
+  fi
+
+  if [[ -z "$sa_id" ]]; then
+    echo "ERROR: unable to create or locate Grafana service account mcp-server" >&2
+    exit 1
+  fi
+
+  log "Generating Grafana MCP token"
+  local new_token
+  local token_payload
+  token_payload=$(printf '{"name":"mcp-token-%s"}' "$(date +%s)")
+  new_token=$(curl -fsS -X POST "$grafana_api_url/serviceaccounts/$sa_id/tokens" \
+    -H "Content-Type: application/json" \
+    -d "$token_payload" | jq -r '.key')
+
+  if [[ -z "$new_token" || "$new_token" == "null" ]]; then
+    echo "ERROR: unable to generate Grafana MCP token" >&2
+    exit 1
+  fi
+
+  kubectl create secret generic grafana-mcp-credentials \
+    --namespace "$NAMESPACE" \
+    --from-literal=token="$new_token" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  kubectl apply -n "$NAMESPACE" -f "${PLT_LAYER_DIR}/grafana-mcp.yaml"
+  rollout_or_debug deployment grafana-mcp-server "app=grafana-mcp-server"
+
+  log "Grafana MCP Server deployed"
+}
+
 deploy_ingress_controller() {
   log "Setting up NGINX Ingress Controller"
 
@@ -330,8 +448,9 @@ deploy_locust() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-configmap.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
-  # Aggiunta dell'Ingress per Locust
-  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-ingress.yaml"
+  if [[ -f "${APP_LAYER_DIR}/ingress.yaml" ]]; then
+    kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
+  fi
 
   log "Waiting for Locust rollouts"
   kubectl rollout status deploy/locust-master -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
@@ -356,7 +475,7 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/enrichment-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/scoring-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
-  kubectl logs -n ${NAMESPACE} deploy/scaling-agent --tail=100
+  kubectl logs -n ${NAMESPACE} deploy/atlas-aiops-agent --tail=100
 
 Endpoints (tramite NGINX Ingress & nip.io):
   API Gateway:   http://fraud-api.127.0.0.1.nip.io
@@ -380,19 +499,20 @@ main() {
   parse_args "$@"
 
   if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
-    echo "ERROR: GRAFANA_ADMIN_PASSWORD non impostata o vuota. Esporta la variabile prima di eseguire ./deploy.sh." >&2
-    exit 1
+    GRAFANA_ADMIN_PASSWORD="admin"
+    log "GRAFANA_ADMIN_PASSWORD not set; using default local value 'admin'"
   fi
 
   if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
-    echo "ERROR: POSTGRES_PASSWORD non impostata o vuota. Esporta la variabile prima di eseguire ./deploy.sh." >&2
-    exit 1
+    POSTGRES_PASSWORD="postgres"
+    log "POSTGRES_PASSWORD not set; using default local value 'postgres'"
   fi
 
   require_cmd kubectl
 
   log "Current context: $(kubectl config current-context)"
   kubectl get nodes >/dev/null
+  detect_cluster_profile
 
   ensure_namespace
 
@@ -403,6 +523,13 @@ main() {
     log "If deploying outside 'default', update k8s/app-layer/config.yaml accordingly."
   fi
 
+  if [[ "$SKIP_PLT" == false ]]; then
+    deploy_plt
+    deploy_grafana_mcp
+  else
+    log "Skipping PLT deployment"
+  fi
+
   if [[ "$BUILD_IMAGES" == true ]]; then
     build_images
   fi
@@ -411,12 +538,6 @@ main() {
     deploy_data_layer
   else
     log "Skipping data layer deployment"
-  fi
-
-  if [[ "$SKIP_PLT" == false ]]; then
-    deploy_plt
-  else
-    log "Skipping PLT deployment"
   fi
 
   if [[ "$SKIP_APP_LAYER" == false ]]; then

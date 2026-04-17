@@ -151,8 +151,8 @@ docker compose up -d --build --scale transaction-client=0
 The platform now uses a single all-in-one scaling runtime.
 
 ### All-in-One Kubernetes MCP Agent
-- Runs from `scaling-agent/mcp_client.py` and is started by `scaling-agent/Dockerfile`
-- Spawns `scaling-agent/mcp_server.py` locally over stdio in the same container
+- Runs from `agents-orchestrator/mcp_client.py` and is started by `agents-orchestrator/Dockerfile`
+- Spawns `agents-orchestrator/mcp_server.py` locally over stdio in the same container
 - Reads global ingress load from Prometheus using `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
 - Applies one global RPS reading to the configured deployment set
 - Scales deployments sequentially in one loop with the default order `api-gateway,scoring-system,enrichment-system,notification-system`
@@ -171,14 +171,15 @@ Key environment variables:
 - `get_scaling_recommendation`: combine current load and replica state into a target action
 
 ### LM Studio Support
-- `LM_STUDIO_URL` points to the OpenAI-compatible local model server
+- `LM_STUDIO_URL`, `LMSTUDIO_BASE_URL`, or `LLM_API_URL` point to the OpenAI-compatible local model server
+- `LM_MODEL` or `LMSTUDIO_MODEL` should match the exact model name exposed by LM Studio, such as `google/gemma-3-12b`
 - The Kubernetes manifest uses `http://host.docker.internal:1234/v1` in Docker Desktop
 - Invalid model output is handled safely inside the client loop
 
 ### Development
-- Update `scaling-agent/mcp_server.py` when you need new tools
-- Update `scaling-agent/mcp_client.py` when you need to change the reasoning loop or tool execution flow
-- Update `k8s/app-layer/k8s-agent.yaml` when you need to change deployment-time configuration
+- Update `agents-orchestrator/mcp_server.py` when you need new tools
+- Update `agents-orchestrator/mcp_client.py` when you need to change the reasoning loop or tool execution flow
+- Update `k8s/app-layer/scaling-agent.yaml` when you need to change deployment-time configuration
 
 ## Monitoring & Observability
 
@@ -203,15 +204,15 @@ atlas-code/
 ├── enrichment-system/    # Enrichment engine
 ├── scoring-system/       # Fraud scoring engine
 ├── notification-system/  # Notification broker
-├── scaling-agent/        # MCP scaling agent
+├── agents-orchestrator/   # MCP scaling agent
 ├── monitoring/           # Prometheus config
 └── docker-compose.yml    # Orchestration
 ```
 
 ### Adding New Features
-1. Define MCP tools in `scaling-agent/mcp_server.py`
-2. Update `scaling-agent/mcp_client.py` if the reasoning loop or tool schema changes
-3. Update `k8s/app-layer/k8s-agent.yaml` for runtime configuration changes
+1. Define MCP tools in `agents-orchestrator/mcp_server.py`
+2. Update `agents-orchestrator/mcp_client.py` if the reasoning loop or tool schema changes
+3. Update `k8s/app-layer/scaling-agent.yaml` for runtime configuration changes
 4. Add Prometheus metrics for new scaling signals as needed
 
 ## Operational Safety

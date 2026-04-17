@@ -4,9 +4,10 @@ import os
 import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 from openai import AsyncOpenAI
+from langgraph.graph import END, StateGraph
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -123,19 +124,73 @@ class ToolRegistry:
         return await session.call_tool(tool_name, arguments=arguments)
 
 
-async def _run_agent_cycle(
+class AgentState(TypedDict, total=False):
+    deployment: str
+    messages: list[dict[str, Any]]
+    step_count: int
+    final_report: str
+    last_error: str
+
+
+def _build_initial_state(deployment: str) -> AgentState:
+    return {
+        "deployment": deployment,
+        "messages": [
+            {"role": "system", "content": _build_system_prompt(deployment)},
+            {"role": "user", "content": _build_user_prompt(deployment)},
+        ],
+        "step_count": 0,
+        "final_report": "",
+        "last_error": "",
+    }
+
+
+def _tool_call_details(tool_call: Any) -> tuple[str, str, str]:
+    if isinstance(tool_call, dict):
+        function = tool_call.get("function") or {}
+        return (
+            tool_call.get("id", ""),
+            function.get("name", ""),
+            function.get("arguments", "") or "{}",
+        )
+
+    function = getattr(tool_call, "function", None)
+    return (
+        getattr(tool_call, "id", ""),
+        getattr(function, "name", ""),
+        getattr(function, "arguments", "") or "{}",
+    )
+
+
+def _format_tool_output(result: Any) -> dict[str, Any]:
+    result_content = getattr(result, "content", []) or []
+    text_result = " ".join([block.text for block in result_content if hasattr(block, "text")])
+    parsed_result: Any = text_result
+    if text_result:
+        try:
+            parsed_result = json.loads(text_result)
+        except json.JSONDecodeError:
+            parsed_result = text_result
+
+    if isinstance(parsed_result, dict) and "status" in parsed_result:
+        return parsed_result
+
+    return {"status": "success", "message": "OK", "data": parsed_result}
+
+
+def _build_agent_graph(
     tool_registry: ToolRegistry,
     llm_client: AsyncOpenAI,
     openai_tools: list[dict[str, Any]],
-    deployment: str,
 ):
-    """Gestisce il ciclo di ragionamento e chiamate agli strumenti con l'LLM"""
-    messages = [
-        {"role": "system", "content": _build_system_prompt(deployment)},
-        {"role": "user", "content": _build_user_prompt(deployment)},
-    ]
+    async def llm_step(state: AgentState) -> dict[str, Any]:
+        deployment = state["deployment"]
+        messages = list(state["messages"])
+        step_count = state.get("step_count", 0)
 
-    for step in range(MAX_STEPS):
+        if step_count >= MAX_STEPS:
+            return {"final_report": "Raggiunto numero massimo di step. Operazione terminata per timeout."}
+
         try:
             response = await llm_client.chat.completions.create(
                 model=LLM_MODEL,
@@ -147,47 +202,80 @@ async def _run_agent_cycle(
         except Exception as exc:
             LOGGER.error(
                 "Errore chiamata LLM",
-                extra={"deployment": deployment, "step": step, "error": str(exc)},
+                extra={"deployment": deployment, "step": step_count, "error": str(exc)},
             )
-            return f"Errore durante la chiamata al modello LLM: {exc}. Mantengo HOLD per sicurezza."
+            return {
+                "final_report": f"Errore durante la chiamata al modello LLM: {exc}. Mantengo HOLD per sicurezza.",
+                "last_error": str(exc),
+            }
 
         assistant_msg = response.choices[0].message
+        message_dict = assistant_msg.model_dump(exclude_unset=True)
+        tool_calls = message_dict.get("tool_calls") or []
 
-        # Aggiungiamo la risposta del modello alla history (gestione sicura per pydantic/dizionari)
-        msg_dict = assistant_msg.model_dump(exclude_unset=True)
-        messages.append(msg_dict)
+        LOGGER.info(
+            "Risposta LLM ricevuta",
+            extra={
+                "deployment": deployment,
+                "step": step_count,
+                "tool_calls": len(tool_calls),
+                "has_content": bool(assistant_msg.content),
+            },
+        )
 
-        # Se l'LLM non ha chiamato strumenti, ha preso la sua decisione finale
-        if not assistant_msg.tool_calls:
-            return assistant_msg.content
+        return {
+            "messages": messages + [message_dict],
+            "final_report": assistant_msg.content or "",
+            "last_error": "",
+        }
 
-        # Esecuzione fisica dei Tools richiesti dall'LLM
-        for tool_call in assistant_msg.tool_calls:
-            tool_name = tool_call.function.name
+    async def tool_step(state: AgentState) -> dict[str, Any]:
+        deployment = state["deployment"]
+        messages = list(state["messages"])
+        assistant_msg = messages[-1] if messages else {}
+        tool_calls = assistant_msg.get("tool_calls") or []
+
+        if not tool_calls:
+            return {"messages": messages}
+
+        for tool_call in tool_calls:
+            tool_call_id, tool_name, raw_arguments = _tool_call_details(tool_call)
+
+            if not tool_name:
+                tool_output = {"status": "error", "message": "Missing tool name", "data": None}
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps(tool_output),
+                    }
+                )
+                continue
 
             try:
-                tool_args = json.loads(tool_call.function.arguments or "{}")
+                tool_args = json.loads(raw_arguments or "{}")
                 if not isinstance(tool_args, dict):
                     raise TypeError("Tool arguments must be a JSON object")
             except json.JSONDecodeError:
                 tool_output = {
-                    "ok": False,
-                    "error": "Invalid JSON arguments provided. Please correct the format and try again.",
+                    "status": "error",
+                    "message": "Invalid JSON arguments provided. Please correct the format and try again.",
+                    "data": None,
                 }
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call_id,
                         "content": json.dumps(tool_output),
                     }
                 )
                 continue
             except TypeError as exc:
-                tool_output = {"ok": False, "error": str(exc)}
+                tool_output = {"status": "error", "message": str(exc), "data": None}
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call_id,
                         "content": json.dumps(tool_output),
                     }
                 )
@@ -205,41 +293,77 @@ async def _run_agent_cycle(
                     },
                 )
                 result = await tool_registry.call_tool(tool_name, arguments=tool_args)
-
-                # MCP restituisce blocchi di testo o immagini, estraiamo il testo
-                result_content = getattr(result, "content", []) or []
-                testo_risultato = " ".join(
-                    [block.text for block in result_content if hasattr(block, "text")]
-                )
-                parsed_result: Any = testo_risultato
-                if testo_risultato:
-                    try:
-                        parsed_result = json.loads(testo_risultato)
-                    except json.JSONDecodeError:
-                        parsed_result = testo_risultato
-
-                # Semplificazione: se il tool restituisce già il formato standard, usalo direttamente.
-                # Altrimenti (es. tool nativi di Grafana), adattalo al nostro formato.
-                if isinstance(parsed_result, dict) and "status" in parsed_result:
-                    tool_output = parsed_result
-                else:
-                    tool_output = {"status": "success", "message": "OK", "data": parsed_result}
-
-            except Exception as e:
+                tool_output = _format_tool_output(result)
+            except Exception as exc:
                 LOGGER.error(
                     "Errore esecuzione Tool",
-                    extra={"deployment": deployment, "tool": tool_name, "error": str(e)},
+                    extra={"deployment": deployment, "tool": tool_name, "error": str(exc)},
                 )
-                # Formattiamo anche gli errori di rete nel formato standard previsto dalla Regola 9
-                tool_output = {"status": "error", "message": str(e), "data": None}
-            # Restituiamo il risultato della funzione all'LLM
+                tool_output = {"status": "error", "message": str(exc), "data": None}
+
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": tool_call_id,
                     "content": json.dumps(tool_output),
                 }
             )
+
+        next_step_count = state.get("step_count", 0) + 1
+        updates: AgentState = {
+            "messages": messages,
+            "step_count": next_step_count,
+            "last_error": "",
+        }
+        if next_step_count >= MAX_STEPS:
+            updates["final_report"] = "Raggiunto numero massimo di step. Operazione terminata per timeout."
+        return updates
+
+    def route_after_llm(state: AgentState) -> str:
+        messages = state.get("messages", [])
+        if not messages:
+            return END
+
+        last_message = messages[-1]
+        tool_calls = last_message.get("tool_calls") or []
+        if not tool_calls:
+            return END
+
+        if state.get("step_count", 0) >= MAX_STEPS:
+            return END
+
+        return "tool_step"
+
+    def route_after_tool(state: AgentState) -> str:
+        if state.get("step_count", 0) >= MAX_STEPS:
+            return END
+        return "llm_step"
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("llm_step", llm_step)
+    workflow.add_node("tool_step", tool_step)
+    workflow.set_entry_point("llm_step")
+    workflow.add_conditional_edges("llm_step", route_after_llm, {"tool_step": "tool_step", END: END})
+    workflow.add_conditional_edges("tool_step", route_after_tool, {"llm_step": "llm_step", END: END})
+    return workflow.compile()
+
+
+async def _run_agent_cycle(agent_graph: Any, deployment: str) -> str:
+    """Gestisce il ciclo di ragionamento e chiamate agli strumenti con l'LLM"""
+    final_state = await agent_graph.ainvoke(_build_initial_state(deployment))
+    report = (final_state.get("final_report") or "").strip()
+
+    if report:
+        return report
+
+    messages = final_state.get("messages") or []
+    if messages:
+        last_message = messages[-1]
+        if isinstance(last_message, dict):
+            content = (last_message.get("content") or "").strip()
+            if content:
+                return content
+
     return "Raggiunto numero massimo di step. Operazione terminata per timeout."
 
 
@@ -312,6 +436,7 @@ async def main():
                 )
 
                 openai_tools = tool_registry.openai_tools
+                agent_graph = _build_agent_graph(tool_registry, llm_client, openai_tools)
 
                 LOGGER.info(
                     "Connessioni MCP inizializzate",
@@ -331,9 +456,7 @@ async def main():
                     for deployment in TARGET_DEPLOYMENTS:
                         try:
                             report = await _run_agent_cycle(
-                                tool_registry,
-                                llm_client,
-                                openai_tools,
+                                agent_graph,
                                 deployment,
                             )
                             LOGGER.info(

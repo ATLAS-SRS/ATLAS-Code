@@ -178,7 +178,7 @@ build_images() {
 	build_and_load_image "atlas/enrichment-system:latest" "${SCRIPT_DIR}/enrichment-system/Dockerfile" "${SCRIPT_DIR}/enrichment-system"
 	build_and_load_image "atlas/scoring-system:fix-readiness-2" "${SCRIPT_DIR}/scoring-system/Dockerfile" "${SCRIPT_DIR}/scoring-system"
 	build_and_load_image "atlas/notification-system:latest" "${SCRIPT_DIR}/notification-system/Dockerfile" "${SCRIPT_DIR}/notification-system"
-	build_and_load_image "atlas/scaling-agent:latest" "${SCRIPT_DIR}/scaling-agent/Dockerfile" "${SCRIPT_DIR}/scaling-agent"
+	build_and_load_image "atlas/scaling-agent:latest" "${SCRIPT_DIR}/agents-orchestrator/Dockerfile" "${SCRIPT_DIR}/agents-orchestrator"
 	build_and_load_image "atlas/kafka-connect:latest" "${SCRIPT_DIR}/Dockerfile.connect" "${SCRIPT_DIR}"
 
 	log "Docker images built and loaded successfully"
