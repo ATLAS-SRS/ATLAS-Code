@@ -15,7 +15,7 @@ class GrafanaMCPManager:
     
     def __init__(self):
         self.mcp_url = os.getenv(
-            "GRAFANA_MCP_URL", 
+            "GRAFANA_MCP_URL",
             "http://grafana-mcp-service.default.svc.cluster.local/sse"
         ).strip()
         self.optimize_context = os.getenv("OPTIMIZE_CONTEXT", "auto").lower()

@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: fraud-system-alerts
+  namespace: default # Assicurati che corrisponda al namespace dove gira Prometheus
+  labels:
+    release: prometheus # TODO: Sostituisci con la release label del tuo Helm chart, essenziale per farglielo leggere
+spec:
+  groups:
+  - name: fraud-system-alerts
+    rules:
+    - alert: HighErrorRate
+      expr: sum(rate(http_requests_total{status=~"5.."}[2m])) by (service, namespace) / sum(rate(http_requests_total[2m])) by (service, namespace) > 0.05
+      for: 1m
+      labels:
+        severity: critical
+        trigger: agent_sre
+      annotations:
+        summary: "Tasso di errore elevato su {{ $labels.service }}"
+
+    - alert: HighLatency
+      expr: histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[3m])) by (le, service, namespace)) > 2.0
+      for: 2m
+      labels:
+        severity: warning
+        trigger: agent_sre
+      annotations:
+        summary: "Latenza critica su {{ $labels.service }}"
+
+    - alert: CPUSaturation
+      expr: sum(rate(container_cpu_usage_seconds_total{container!="POD", container!=""}[3m])) by (pod, namespace) / sum(kube_pod_container_resource_limits{resource="cpu"}) by (pod, namespace) > 0.85
+      for: 3m
+      labels:
+        severity: warning
+        trigger: agent_sre
+      annotations:
+        summary: "Saturazione CPU sul pod {{ $labels.pod }}"

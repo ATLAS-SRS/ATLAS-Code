@@ -335,6 +335,8 @@ deploy_plt() {
     -f "${PLT_LAYER_DIR}/grafana-values.yaml" \
     -f "${PLT_LAYER_DIR}/prometheus-values.yaml"
 
+  kubectl apply -f "${PLT_LAYER_DIR}/prometheus-rules.yaml" -n "$NAMESPACE"
+
   log "Waiting for PLT rollouts"
   kubectl rollout status deploy/atlas-monitoring-grafana -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
 

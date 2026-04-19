@@ -25,6 +25,29 @@ prometheus:
             requests:
               storage: 2Gi
 
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'service']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 1h
+      receiver: 'null' # Default se non matcha nulla
+      routes:
+        - matchers:
+            - trigger="agent_sre"
+          receiver: 'agent-webhook'
+          continue: true
+    receivers:
+    - name: 'null'
+    - name: 'agent-webhook'
+      webhook_configs:
+      # Punta al service del tuo orchestratore di agenti
+      - url: 'http://agents-orchestrator.default.svc.cluster.local:8000/webhook' # TODO: Sostituisci con l'URL corretto del tuo orchestratore di agenti
+        send_resolved: true
+
 nodeExporter:
   enabled: false
 kubeStateMetrics:
