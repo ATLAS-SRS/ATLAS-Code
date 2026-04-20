@@ -78,3 +78,19 @@ spec:
             limits:
               cpu: 250m
               memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-aiops-service
+  namespace: default
+  labels:
+    app: scaling-agent
+spec:
+  selector:
+    app: scaling-agent # Deve corrispondere alle label del Deployment
+  ports:
+    - protocol: TCP
+      port: 8000       # La porta su cui Kubernetes espone il servizio
+      targetPort: 8000 # La porta su cui è in ascolto il codice Python/FastAPI del tuo collega
+  type: ClusterIP

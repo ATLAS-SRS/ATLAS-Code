@@ -4,7 +4,7 @@ metadata:
   name: fraud-system-alerts
   namespace: default # Assicurati che corrisponda al namespace dove gira Prometheus
   labels:
-    release: prometheus # TODO: Sostituisci con la release label del tuo Helm chart, essenziale per farglielo leggere
+    release: atlas-monitoring
 spec:
   groups:
   - name: fraud-system-alerts
