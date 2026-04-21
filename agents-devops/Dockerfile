@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-u", "mcp_client.py"]
+CMD ["python", "-u", "main_agent_guardian.py"]

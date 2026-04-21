@@ -201,21 +201,24 @@ deploy_data_layer() {
     postgres_helm_args+=(--set "metrics.enabled=false" --set "metrics.serviceMonitor.enabled=false")
   fi
 
+  # Use an explicit helm binary path and construct the command via arrays
+  HELM_BIN="$(command -v helm || echo helm)"
+
+  # --- Kafka ---
   local kafka_output=""
-  if ! kafka_output=$(helm upgrade --install atlas-kafka bitnami/kafka \
-      --namespace "$NAMESPACE" \
-      --create-namespace \
-      "${kafka_helm_args[@]}" \
-      -f "${DATA_LAYER_DIR}/kafka-values.yaml" 2>&1); then
+  helm_cmd=("$HELM_BIN" upgrade --install atlas-kafka bitnami/kafka --namespace "$NAMESPACE" --create-namespace)
+  if [[ ${#kafka_helm_args[@]} -gt 0 ]]; then
+    helm_cmd+=("${kafka_helm_args[@]}")
+  fi
+  helm_cmd+=(-f "${DATA_LAYER_DIR}/kafka-values.yaml")
+
+  if ! kafka_output=$("${helm_cmd[@]}" 2>&1); then
     if [[ "$IMMUTABLE_RECOVERY" == true ]] && [[ "$kafka_output" == *"Forbidden: updates to statefulset spec"* ]]; then
       log "Kafka upgrade failed due to immutable StatefulSet fields. Applying safe recovery."
       kubectl delete statefulset atlas-kafka-controller -n "$NAMESPACE" --ignore-not-found
 
-      helm upgrade --install atlas-kafka bitnami/kafka \
-        --namespace "$NAMESPACE" \
-        --create-namespace \
-        "${kafka_helm_args[@]}" \
-        -f "${DATA_LAYER_DIR}/kafka-values.yaml"
+      # Re-run the same helm command (let it print errors if it fails now)
+      "${helm_cmd[@]}"
     else
       echo "$kafka_output" >&2
       kubectl delete job kafka-connector-setup -n "$NAMESPACE" --ignore-not-found
@@ -223,20 +226,24 @@ deploy_data_layer() {
     fi
   fi
 
-  helm upgrade --install atlas-redis bitnami/redis \
-    --namespace "$NAMESPACE" \
-    --create-namespace \
-    "${redis_helm_args[@]}" \
-    -f "${DATA_LAYER_DIR}/redis-values.yaml"
+  # --- Redis ---
+  helm_cmd=("$HELM_BIN" upgrade --install atlas-redis bitnami/redis --namespace "$NAMESPACE" --create-namespace)
+  if [[ ${#redis_helm_args[@]} -gt 0 ]]; then
+    helm_cmd+=("${redis_helm_args[@]}")
+  fi
+  helm_cmd+=(-f "${DATA_LAYER_DIR}/redis-values.yaml")
+  "${helm_cmd[@]}"
 
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/postgres-init-configmap.yaml"
 
-  helm upgrade --install atlas-postgres bitnami/postgresql \
-    --namespace "$NAMESPACE" \
-    --create-namespace \
-    --set "auth.postgresPassword=${POSTGRES_PASSWORD}" \
-    "${postgres_helm_args[@]}" \
-    -f "${DATA_LAYER_DIR}/postgres-values.yaml"
+  # --- Postgres ---
+  helm_cmd=("$HELM_BIN" upgrade --install atlas-postgres bitnami/postgresql --namespace "$NAMESPACE" --create-namespace)
+  if [[ ${#postgres_helm_args[@]} -gt 0 ]]; then
+    helm_cmd+=("${postgres_helm_args[@]}")
+  fi
+  helm_cmd+=("--set" "auth.postgresPassword=${POSTGRES_PASSWORD}")
+  helm_cmd+=(-f "${DATA_LAYER_DIR}/postgres-values.yaml")
+  "${helm_cmd[@]}"
 
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/schema-registry.yaml"
   kubectl apply -n "$NAMESPACE" -f "${DATA_LAYER_DIR}/kafka-connect.yaml"
