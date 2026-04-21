@@ -176,7 +176,7 @@ build_images() {
   docker build -t atlas/enrichment-system:latest -f enrichment-system/Dockerfile enrichment-system/
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
-  docker build -t atlas/scaling-agent:latest -f agents-orchestrator/Dockerfile agents-orchestrator/
+  docker build -t atlas/agent-guardian:latest -f agents-devops/Dockerfile agents-devops/
   docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
 
   log "Docker images built successfully"

@@ -83,8 +83,25 @@ class GrafanaMCPManager:
                 continue
                 
             # Create an async wrapper function dynamically bound to this specific tool's name
-            async def tool_wrapper(arguments: dict, _tool_name=tool.name) -> str:
-                return await self.execute_tool(_tool_name, arguments)
+            async def tool_wrapper(**kwargs) -> str:
+                current_tool_name = kwargs.pop("__mcp_tool_name") 
+                return await self.execute_tool(current_tool_name, kwargs)
+
+            import functools
+            bound_wrapper = functools.partial(tool_wrapper, __mcp_tool_name=tool.name)
+            bound_wrapper.__name__ = tool.name
+            bound_wrapper.__doc__ = tool.description
+
+            lc_tool = StructuredTool.from_function(
+                coroutine=bound_wrapper,
+                name=tool.name,
+                description=tool.description,
+                # LangChain cercherà di dedurre gli argomenti, ma se non ci riesce
+                # il modo migliore (più avanzato) sarebbe convertire tool.inputSchema 
+                # in un modello Pydantic. Per ora testalo così, spesso LangChain 
+                # riesce a dedurlo dalla descrizione se è ben scritta.
+            )
+            langchain_tools.append(lc_tool)
             
             # Explicitly set metadata so LangChain can pass it to the LLM
             tool_wrapper.__name__ = tool.name

@@ -62,9 +62,15 @@ spec:
             - name: PROMETHEUS_URL
               value: "http://atlas-monitoring-kube-prom-prometheus.default.svc.cluster.local:9090"
             - name: LLM_API_URL
-              value: "http://host.docker.internal:1234/v1"
+              value: "http://host.docker.internal:1234/v1" #TODO: cambiare con l'URL corretto per accedere al modello LLM
             - name: LLM_MODEL
-              value: "google/gemma-3-12b"
+              value: "google/gemma-3-12b" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
+
+            - name: LLM_API_KEY # TODO: capire se usare il secret di kubernetes
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: LLM_API_KEY
             - name: LM_STUDIO_URL
               value: "http://host.docker.internal:1234/v1"
             - name: LMSTUDIO_BASE_URL
