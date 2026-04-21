@@ -74,7 +74,7 @@ The local tool server exposes the following MCP tools:
 
 ### Kubernetes Central Orchestrator
 
-This is the runtime used by the Kubernetes manifest (`k8s/app-layer/scaling-agent.yaml`):
+This is the runtime used by the Kubernetes manifest (`k8s/app-layer/agent-guardian.yaml`):
 
 ```bash
 python -u mcp_client.py
@@ -105,7 +105,7 @@ Repository tests, when present, live alongside this package.
 Run them from the repo root:
 
 ```bash
-docker compose run --rm --entrypoint pytest scaling-agent -o cache_dir=/tmp/pytest-cache /workspace/agents-orchestrator/tests
+docker compose run --rm --entrypoint pytest agent-guardian -o cache_dir=/tmp/pytest-cache /workspace/agents-orchestrator/tests
 ```
 
 ## Configuration

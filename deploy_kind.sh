@@ -21,7 +21,7 @@ INGRESS_MANIFEST_URL="https://raw.githubusercontent.com/kubernetes/ingress-nginx
 INGRESS_NAMESPACE="ingress-nginx"
 INGRESS_CONTROLLER_LABEL="app.kubernetes.io/component=controller,app.kubernetes.io/name=ingress-nginx"
 
-SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-guardian.yaml"
 SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
 
 usage() {
@@ -178,7 +178,7 @@ build_images() {
 	build_and_load_image "atlas/enrichment-system:latest" "${SCRIPT_DIR}/enrichment-system/Dockerfile" "${SCRIPT_DIR}/enrichment-system"
 	build_and_load_image "atlas/scoring-system:fix-readiness-2" "${SCRIPT_DIR}/scoring-system/Dockerfile" "${SCRIPT_DIR}/scoring-system"
 	build_and_load_image "atlas/notification-system:latest" "${SCRIPT_DIR}/notification-system/Dockerfile" "${SCRIPT_DIR}/notification-system"
-	# build_and_load_image "atlas/scaling-agent:latest" "${SCRIPT_DIR}/scaling-agent/Dockerfile" "${SCRIPT_DIR}/scaling-agent"
+	# build_and_load_image "atlas/agent-guardian:latest" "${SCRIPT_DIR}/agent-guardian/Dockerfile" "${SCRIPT_DIR}/agent-guardian"
 	build_and_load_image "atlas/kafka-connect:latest" "${SCRIPT_DIR}/Dockerfile.connect" "${SCRIPT_DIR}"
 
 	log "Docker images built and loaded successfully"
@@ -394,9 +394,9 @@ deploy_app_layer() {
 	rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
 
 	if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
-		log "Deploying scaling-agent"
+		log "Deploying agent-guardian"
 		kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
-		rollout_or_debug deployment scaling-agent "app=scaling-agent"
+		rollout_or_debug deployment agent-guardian "app=agent-guardian"
 	else
 		log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
 	fi

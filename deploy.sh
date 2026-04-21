@@ -14,8 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_LAYER_DIR="${SCRIPT_DIR}/k8s/data-layer"
 PLT_LAYER_DIR="${SCRIPT_DIR}/k8s/plt-layer"
 APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
-DEFAULT_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
-KIND_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/scaling-agent.yaml"
+DEFAULT_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-guardian.yaml"
+KIND_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-guardian.yaml"
 SCALING_AGENT_MANIFEST="${DEFAULT_SCALING_AGENT_MANIFEST}"
 SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
 CLUSTER_PROFILE="unknown"
@@ -166,7 +166,7 @@ detect_cluster_profile() {
   fi
 
   log "Detected cluster profile ${CLUSTER_PROFILE} (context: ${current_context:-unknown})"
-  log "Using scaling-agent manifest ${SCALING_AGENT_MANIFEST}"
+  log "Using agent-guardian manifest ${SCALING_AGENT_MANIFEST}"
 }
 
 build_images() {
@@ -303,11 +303,11 @@ deploy_app_layer() {
   rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
 
   if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
-    log "Deploying scaling-agent"
+    log "Deploying agent-guardian"
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
     rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
   else
-    log "Scaling-agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
+    log "agent-guardian manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
   fi
 
   log "App layer deployed"

@@ -16,7 +16,7 @@ scrape_configs:
       - targets: ['api-gateway:8000']
     metrics_path: '/metrics'
 
-  - job_name: 'scaling-agent'
+  - job_name: 'agent-guardian'
     static_configs:
-      - targets: ['scaling-agent:8002']
+      - targets: ['agent-guardian:8002']
     metrics_path: '/metrics'

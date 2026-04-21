@@ -34,25 +34,25 @@ metadata:
   name: atlas-aiops-agent
   namespace: default
   labels:
-    app: scaling-agent
+    app: agent-guardian
     app.kubernetes.io/name: atlas-aiops-agent
     app.kubernetes.io/part-of: atlas-aiops
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: scaling-agent
+      app: agent-guardian
   template:
     metadata:
       labels:
-        app: scaling-agent
+        app: agent-guardian
         app.kubernetes.io/name: atlas-aiops-agent
         app.kubernetes.io/part-of: atlas-aiops
     spec:
       serviceAccountName: atlas-aiops-sa
       containers:
-        - name: scaling-agent
-          image: atlas/scaling-agent:latest
+        - name: agent-guardian
+          image: atlas/agent-guardian:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: NAMESPACE
@@ -64,13 +64,13 @@ spec:
             - name: LLM_API_URL
               value: "http://host.docker.internal:1234/v1" #TODO: cambiare con l'URL corretto per accedere al modello LLM
             - name: LLM_MODEL
-              value: "google/gemma-3-12b" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
+              value: "local-model" #"google/gemma-3-12b" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
 
-            - name: LLM_API_KEY # TODO: capire se usare il secret di kubernetes
-              valueFrom:
-                secretKeyRef:
-                  name: llm-credentials
-                  key: LLM_API_KEY
+            # - name: LLM_API_KEY # TODO: capire se usare il secret di kubernetes
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: llm-credentials
+            #       key: LLM_API_KEY
             - name: LM_STUDIO_URL
               value: "http://host.docker.internal:1234/v1"
             - name: LMSTUDIO_BASE_URL
@@ -91,10 +91,10 @@ metadata:
   name: atlas-aiops-service
   namespace: default
   labels:
-    app: scaling-agent
+    app: agent-guardian
 spec:
   selector:
-    app: scaling-agent # Deve corrispondere alle label del Deployment
+    app: agent-guardian # Deve corrispondere alle label del Deployment
   ports:
     - protocol: TCP
       port: 8000       # La porta su cui Kubernetes espone il servizio

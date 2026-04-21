@@ -246,9 +246,9 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  scaling-agent:
+  agent-guardian:
     build: ./agents-orchestrator
-    container_name: scaling-agent
+    container_name: agent-guardian
     ports:
       - "8001:8001"
       - "8002:8002"

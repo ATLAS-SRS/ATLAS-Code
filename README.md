@@ -179,7 +179,7 @@ Key environment variables:
 ### Development
 - Update `agents-orchestrator/mcp_server.py` when you need new tools
 - Update `agents-orchestrator/mcp_client.py` when you need to change the reasoning loop or tool execution flow
-- Update `k8s/app-layer/scaling-agent.yaml` when you need to change deployment-time configuration
+- Update `k8s/app-layer/agent-guardian.yaml` when you need to change deployment-time configuration
 
 ## Monitoring & Observability
 
@@ -212,7 +212,7 @@ atlas-code/
 ### Adding New Features
 1. Define MCP tools in `agents-orchestrator/mcp_server.py`
 2. Update `agents-orchestrator/mcp_client.py` if the reasoning loop or tool schema changes
-3. Update `k8s/app-layer/scaling-agent.yaml` for runtime configuration changes
+3. Update `k8s/app-layer/agent-guardian.yaml` for runtime configuration changes
 4. Add Prometheus metrics for new scaling signals as needed
 
 ## Operational Safety
