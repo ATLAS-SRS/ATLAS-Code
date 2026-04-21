@@ -61,6 +61,8 @@ spec:
               value: "api-gateway,scoring-system,enrichment-system,notification-system"
             - name: PROMETHEUS_URL
               value: "http://atlas-monitoring-kube-prom-prometheus.default.svc.cluster.local:9090"
+            - name: GRAFANA_MCP_URL
+              value: "http://grafana-mcp-server.default.svc.cluster.local:80/sse"
             - name: LLM_API_URL
               value: "http://host.docker.internal:1234/v1" #TODO: cambiare con l'URL corretto per accedere al modello LLM
             - name: LLM_MODEL

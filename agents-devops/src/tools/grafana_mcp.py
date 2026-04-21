@@ -16,7 +16,7 @@ class GrafanaMCPManager:
     def __init__(self):
         self.mcp_url = os.getenv(
             "GRAFANA_MCP_URL",
-            "http://grafana-mcp-service.default.svc.cluster.local/sse"
+            "http://grafana-mcp-server.default.svc.cluster.local:80/sse"
         ).strip()
         self.optimize_context = os.getenv("OPTIMIZE_CONTEXT", "auto").lower()
         self.allowed_tools = {"query_prometheus", "query_loki_logs"}
