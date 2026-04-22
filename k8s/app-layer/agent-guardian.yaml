@@ -11,7 +11,7 @@ metadata:
   namespace: default
 rules:
   - apiGroups: ["apps"]
-    resources: ["deployments", "deployments/scale"]
+    resources: ["deployments", "deployments/scale", "deployments/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -64,15 +64,16 @@ spec:
             - name: GRAFANA_MCP_URL
               value: "http://grafana-mcp-service.default.svc.cluster.local:80/sse"
             - name: LLM_API_URL
-              value: "http://host.docker.internal:1234/v1" #TODO: cambiare con l'URL corretto per accedere al modello LLM
+              value: "https://litellm-proxy-1013932759942.europe-west8.run.app"
             - name: LLM_MODEL
-              value: "local-model" #"google/gemma-3-12b" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
-
-            # - name: LLM_API_KEY # TODO: capire se usare il secret di kubernetes
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: llm-credentials
-            #       key: LLM_API_KEY
+              value: "gemini-2.5-pro" #"google/gemma-3-12b" or "local-model" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
+            - name: OPTIMIZE_CONTEXT
+              value: "false"
+            - name: LLM_API_KEY # TODO: capire se usare il secret di kubernetes
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: LLM_API_KEY
             - name: LM_STUDIO_URL
               value: "http://host.docker.internal:1234/v1"
             - name: LMSTUDIO_BASE_URL

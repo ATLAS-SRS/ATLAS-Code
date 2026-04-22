@@ -20,8 +20,7 @@ class GrafanaMCPManager:
             f"http://grafana-mcp-service.{namespace}.svc.cluster.local:80/sse"
         ).strip()
         self.optimize_context = os.getenv("OPTIMIZE_CONTEXT", "auto").lower()
-        self.allowed_tools = {"query_prometheus", "query_loki_logs"}
-
+        self.allowed_tools = {"query_prometheus", "query_loki_logs", "list_datasources"}
         self._tools_cache: list[StructuredTool] | None = None
 
     async def _with_session(self, operation: Callable[[ClientSession], Awaitable[Any]]) -> Any:
@@ -72,31 +71,15 @@ class GrafanaMCPManager:
         )
         should_filter = (self.optimize_context == "true") or (self.optimize_context == "auto" and is_small_model)
 
-        def _make_tool_wrapper(tool_name: str) -> Callable[..., Awaitable[str]]:
-            async def tool_wrapper(**kwargs) -> str:
-                return await self.execute_tool(tool_name, kwargs)
-
-            tool_wrapper.__name__ = tool_name
-            return tool_wrapper
-
-        langchain_tools = []
+        filtered_tools = []
         for tool in mcp_tools.tools:
             if should_filter and tool.name not in self.allowed_tools:
                 continue
+            filtered_tools.append(tool)
 
-            bound_wrapper = _make_tool_wrapper(tool.name)
-            bound_wrapper.__doc__ = tool.description or f"Execute MCP tool {tool.name}."
-
-            lc_tool = StructuredTool.from_function(
-                coroutine=bound_wrapper,
-                name=tool.name,
-                description=tool.description,
-            )
-            langchain_tools.append(lc_tool)
-
-        self._tools_cache = langchain_tools
-        LOGGER.info(f"Loaded {len(langchain_tools)} Grafana MCP tools.")
-        return langchain_tools
+        self._tools_cache = filtered_tools
+        LOGGER.info(f"Loaded {len(filtered_tools)} Grafana MCP tools.")
+        return filtered_tools
 
     async def close(self):
         """Reset local cache. No long-lived session is kept."""

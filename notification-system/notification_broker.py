@@ -341,3 +341,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# TODO: fix problem look the log in the terminal

@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from contextlib import AsyncExitStack
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
@@ -73,31 +74,37 @@ class SREGuardianRuntime:
         try:
             grafana_tools = await self._grafana_manager.get_tools(LLM_MODEL)
         except Exception as exc:
-            # Do not fail application startup if Grafana MCP is temporarily unavailable.
             LOGGER.error(
                 "Grafana MCP unavailable at startup; continuing without Grafana tools",
                 extra={"error": str(exc)},
             )
             return
 
-        unique_by_name: dict[str, StructuredTool] = {}
         for tool in grafana_tools:
-            unique_by_name[tool.name] = tool
+            # Estraiamo lo schema reale dal server MCP di Grafana
+            parameters = getattr(tool, "inputSchema", None) or {"type": "object", "properties": {}}
 
-        for tool_name, tool in unique_by_name.items():
+            # Creiamo la closure senza kwargs
+            async def _invoke(args: dict[str, Any], t_name: str = tool.name) -> dict[str, Any]:
+                try:
+                    raw_str = await self._grafana_manager.execute_tool(t_name, args)
+                    return json.loads(raw_str)
+                except Exception as exc:
+                    return {"status": "error", "message": str(exc), "data": None}
+
             self._tool_registry.register(
                 ToolDef(
-                    name=tool_name,
+                    name=tool.name,
                     description=tool.description or "Grafana MCP tool",
-                    parameters=_structured_tool_schema(tool),
+                    parameters=parameters,
                     source="grafana_mcp",
-                    invoke=lambda args, t=tool: _invoke_langchain_tool(t, args),
+                    invoke=_invoke,
                 )
             )
 
         LOGGER.info(
             "Grafana tools loaded",
-            extra={"tools": sorted(list(unique_by_name.keys()))},
+            extra={"tools": [t.name for t in grafana_tools]},
         )
 
     async def _register_k8s_tools_stdio(self) -> None:
@@ -171,7 +178,7 @@ class SREGuardianRuntime:
             grafana_allowed = {
                 name
                 for name in tool_registry.names()
-                if name in {"query_prometheus", "query_loki_logs"}
+                if name in {"query_prometheus", "query_loki_logs", "list_datasources"}
             }
 
             if not grafana_allowed:
