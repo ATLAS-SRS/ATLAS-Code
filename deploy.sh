@@ -527,6 +527,10 @@ main() {
 
   deploy_ingress_controller
 
+  if [[ "$BUILD_IMAGES" == true ]]; then
+    build_images
+  fi
+
   if [[ "$NAMESPACE" != "default" ]]; then
     log "WARNING: app-layer ConfigMap currently references *.default.svc.cluster.local endpoints."
     log "If deploying outside 'default', update k8s/app-layer/config.yaml accordingly."
@@ -537,10 +541,6 @@ main() {
     deploy_grafana_mcp
   else
     log "Skipping PLT deployment"
-  fi
-
-  if [[ "$BUILD_IMAGES" == true ]]; then
-    build_images
   fi
 
   if [[ "$SKIP_DATA_LAYER" == false ]]; then

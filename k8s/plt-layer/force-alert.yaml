@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: force-test-alert
+  namespace: default
+  labels:
+    release: atlas-monitoring
+spec:
+  groups:
+  - name: force-test-group
+    rules:
+    - alert: HighCPUThrottling  # Lo chiamo così per ingannare l'agente e fargli credere che sia l'allarme vero
+      expr: vector(1) == 1
+      for: 10s
+      labels:
+        severity: critical
+        trigger: agent_sre
+        service: api-gateway
+      annotations:
+        summary: "High CPU throttling detected"
+        description: "API Gateway is experiencing severe CPU throttling."
+
+# TODO: questo è un alert di test, da rimuovere o modificare in produzione. Serve solo per forzare l'attivazione dell'agente e testare (al momento è disattivato) l'integrazione end-to-end.
