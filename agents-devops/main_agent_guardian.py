@@ -56,22 +56,13 @@ async def webhook(payload: dict[str, Any]) -> JSONResponse:
     results: list[dict[str, Any]] = []
     for idx, alert in enumerate(firing_alerts):
         try:
-            final_state = await runtime.graph.ainvoke({"alert": alert})
-            results.append(
-                {
-                    "index": idx,
-                    "alert_name": (final_state.get("parsed_alert") or {}).get("alert_name", "unknown"),
-                    "deployment": (final_state.get("parsed_alert") or {}).get("deployment", ""),
-                    "investigation_report": final_state.get("investigation_report", ""),
-                    "final_report": final_state.get("final_report", ""),
-                    "error": final_state.get("error", ""),
-                }
-            )
+            results.append(await runtime.process_alert(alert, idx))
         except Exception as exc:
             LOGGER.error("Unhandled agent execution error", extra={"index": idx, "error": str(exc)})
             results.append(
                 {
                     "index": idx,
+                    "status": "error",
                     "alert_name": (alert.get("labels") or {}).get("alertname", "unknown"),
                     "deployment": (alert.get("labels") or {}).get("service", ""),
                     "investigation_report": "",

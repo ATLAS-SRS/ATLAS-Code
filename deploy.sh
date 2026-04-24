@@ -136,6 +136,35 @@ ensure_namespace() {
   fi
 }
 
+ensure_llm_credentials_secret() {
+  if [[ ! -f "$SCALING_AGENT_MANIFEST" ]]; then
+    return 0
+  fi
+
+  if ! grep -q "name: llm-credentials" "$SCALING_AGENT_MANIFEST"; then
+    return 0
+  fi
+
+  if kubectl get secret llm-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+    log "Found existing llm-credentials secret"
+    return 0
+  fi
+
+  if [[ -n "${LLM_API_KEY:-}" ]]; then
+    log "Creating llm-credentials secret from LLM_API_KEY environment variable"
+    kubectl create secret generic llm-credentials \
+      --namespace "$NAMESPACE" \
+      --from-literal=LLM_API_KEY="$LLM_API_KEY" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    return 0
+  fi
+
+  echo "ERROR: secret llm-credentials not found in namespace ${NAMESPACE} and LLM_API_KEY is not set." >&2
+  echo "Set it with: export LLM_API_KEY=<your-litellm-api-key>" >&2
+  echo "Or create it manually: kubectl create secret generic llm-credentials -n ${NAMESPACE} --from-literal=LLM_API_KEY=<your-litellm-api-key>" >&2
+  exit 1
+}
+
 service_monitor_crd_exists() {
   kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1
 }
@@ -296,6 +325,7 @@ deploy_app_layer() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/hpa.yaml"
 
   if [[ -f "$SERVICEMONITORS_MANIFEST" ]] && service_monitor_crd_exists; then
     kubectl apply -n "$NAMESPACE" -f "$SERVICEMONITORS_MANIFEST"
@@ -310,6 +340,7 @@ deploy_app_layer() {
   rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
 
   if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
+    ensure_llm_credentials_secret
     log "Deploying agent-guardian"
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
     rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
@@ -341,6 +372,14 @@ deploy_plt() {
     --set "grafana.adminPassword=${GRAFANA_ADMIN_PASSWORD}" \
     -f "${PLT_LAYER_DIR}/grafana-values.yaml" \
     -f "${PLT_LAYER_DIR}/prometheus-values.yaml"
+
+  log "Deploying metrics-server for HPA support"
+  kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+  if ! kubectl get deployment metrics-server -n kube-system -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- '--kubelet-insecure-tls'; then
+    kubectl -n kube-system patch deployment metrics-server --type=json \
+      -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]' || true
+  fi
+  kubectl rollout status deployment/metrics-server -n kube-system --timeout="$WAIT_TIMEOUT"
 
   kubectl apply -f "${PLT_LAYER_DIR}/prometheus-rules.yaml" -n "$NAMESPACE"
 

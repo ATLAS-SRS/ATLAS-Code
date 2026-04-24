@@ -114,6 +114,35 @@ ensure_namespace() {
 	fi
 }
 
+ensure_llm_credentials_secret() {
+  if [[ ! -f "$SCALING_AGENT_MANIFEST" ]]; then
+    return 0
+  fi
+
+  if ! grep -q "name: llm-credentials" "$SCALING_AGENT_MANIFEST"; then
+    return 0
+  fi
+
+  if kubectl get secret llm-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+    log "Found existing llm-credentials secret"
+    return 0
+  fi
+
+  if [[ -n "${LLM_API_KEY:-}" ]]; then
+    log "Creating llm-credentials secret from LLM_API_KEY environment variable"
+    kubectl create secret generic llm-credentials \
+      --namespace "$NAMESPACE" \
+      --from-literal=LLM_API_KEY="$LLM_API_KEY" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    return 0
+  fi
+
+  echo "ERROR: secret llm-credentials not found in namespace ${NAMESPACE} and LLM_API_KEY is not set." >&2
+  echo "Set it with: export LLM_API_KEY=<your-litellm-api-key>" >&2
+  echo "Or create it manually: kubectl create secret generic llm-credentials -n ${NAMESPACE} --from-literal=LLM_API_KEY=<your-litellm-api-key>" >&2
+  exit 1
+}
+
 ensure_cluster() {
 	if ! kind get clusters | grep -Fxq "$CLUSTER_NAME"; then
 		if [[ ! -f "$KIND_CONFIG" ]]; then
@@ -353,6 +382,14 @@ deploy_plt() {
     rollout_or_debug deployment grafana-mcp-server "app.kubernetes.io/name=grafana-mcp-server"
     # --- FINE AUTOMAZIONE TOKEN MCP ---
 
+	log "Deploying metrics-server for HPA support"
+	kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+	if ! kubectl get deployment metrics-server -n kube-system -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- '--kubelet-insecure-tls'; then
+		kubectl -n kube-system patch deployment metrics-server --type=json \
+			-p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]' || true
+	fi
+	kubectl rollout status deployment/metrics-server -n kube-system --timeout="$WAIT_TIMEOUT"
+
 	local prom_sts=""
 	prom_sts=$(kubectl get statefulset -n "$NAMESPACE" \
 		-l "release=atlas-monitoring,app.kubernetes.io/name=prometheus" \
@@ -382,6 +419,7 @@ deploy_app_layer() {
 	kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
 	kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
 	kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
+	kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/hpa.yaml"
 
 	if [[ -f "$SERVICEMONITORS_MANIFEST" ]]; then
 		kubectl apply -n "$NAMESPACE" -f "$SERVICEMONITORS_MANIFEST"
@@ -394,9 +432,10 @@ deploy_app_layer() {
 	rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
 
 	if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
+		ensure_llm_credentials_secret
 		log "Deploying agent-guardian"
 		kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
-		rollout_or_debug deployment agent-guardian "app=agent-guardian"
+		rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
 	else
 		log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
 	fi

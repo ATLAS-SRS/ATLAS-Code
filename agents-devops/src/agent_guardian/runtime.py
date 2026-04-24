@@ -1,6 +1,9 @@
 import os
 import sys
 import json
+import hashlib
+import asyncio
+import time
 from contextlib import AsyncExitStack
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
@@ -34,12 +37,107 @@ class SREGuardianRuntime:
         self._graph = None
         self._tool_registry = ToolRegistry()
         self._grafana_manager: GrafanaMCPManager | None = None
+        self._inflight_by_deployment: dict[str, asyncio.Lock] = {}
+        self._recent_alerts: dict[tuple[str, str], float] = {}
+        self._dedup_window_seconds = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "60"))
 
     @property
     def graph(self):
         if self._graph is None:
             raise RuntimeError("Runtime graph not initialized")
         return self._graph
+
+    def _alert_fingerprint(self, alert: dict[str, Any], parsed_alert: dict[str, Any]) -> str:
+        labels = parsed_alert.get("labels") or {}
+        fingerprint_payload = {
+            "alert_name": parsed_alert.get("alert_name", ""),
+            "severity": parsed_alert.get("severity", ""),
+            "deployment": parsed_alert.get("deployment", ""),
+            "status": parsed_alert.get("status", ""),
+            "startsAt": parsed_alert.get("startsAt", ""),
+            "endsAt": parsed_alert.get("endsAt", ""),
+            "labels": {k: labels[k] for k in sorted(labels)},
+            "generatorURL": alert.get("generatorURL", ""),
+        }
+        raw = _safe_json(fingerprint_payload)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _prune_recent_alerts(self, now: float) -> None:
+        ttl = self._dedup_window_seconds * 4
+        stale = [key for key, ts in self._recent_alerts.items() if (now - ts) > ttl]
+        for key in stale:
+            self._recent_alerts.pop(key, None)
+
+    async def process_alert(self, alert: dict[str, Any], index: int) -> dict[str, Any]:
+        parsed = _extract_alert_fields(alert)
+        deployment = parsed.get("deployment") or "unknown"
+        fingerprint = self._alert_fingerprint(alert, parsed)
+
+        now = time.monotonic()
+        self._prune_recent_alerts(now)
+        dedup_key = (deployment, fingerprint)
+        last_seen = self._recent_alerts.get(dedup_key)
+        if last_seen is not None and (now - last_seen) < self._dedup_window_seconds:
+            LOGGER.info(
+                "Skipping duplicate alert in cooldown window",
+                extra={
+                    "index": index,
+                    "deployment": deployment,
+                    "dedup_window_seconds": self._dedup_window_seconds,
+                },
+            )
+            return {
+                "index": index,
+                "status": "ignored_duplicate",
+                "alert_name": parsed.get("alert_name", "unknown"),
+                "deployment": deployment,
+                "investigation_report": "",
+                "final_report": _safe_json(
+                    {
+                        "action": "HOLD",
+                        "deployment": deployment,
+                        "rationale": "Duplicate alert received during cooldown window",
+                        "outcome": "No action",
+                    }
+                ),
+                "error": "",
+            }
+
+        lock = self._inflight_by_deployment.setdefault(deployment, asyncio.Lock())
+        if lock.locked():
+            LOGGER.info(
+                "Skipping alert because another run is already in-flight for deployment",
+                extra={"index": index, "deployment": deployment},
+            )
+            return {
+                "index": index,
+                "status": "ignored_inflight",
+                "alert_name": parsed.get("alert_name", "unknown"),
+                "deployment": deployment,
+                "investigation_report": "",
+                "final_report": _safe_json(
+                    {
+                        "action": "HOLD",
+                        "deployment": deployment,
+                        "rationale": "Another remediation run is already in-flight for this deployment",
+                        "outcome": "No action",
+                    }
+                ),
+                "error": "",
+            }
+
+        async with lock:
+            self._recent_alerts[dedup_key] = now
+            final_state = await self.graph.ainvoke({"alert": alert})
+            return {
+                "index": index,
+                "status": "processed",
+                "alert_name": (final_state.get("parsed_alert") or {}).get("alert_name", "unknown"),
+                "deployment": (final_state.get("parsed_alert") or {}).get("deployment", deployment),
+                "investigation_report": final_state.get("investigation_report", ""),
+                "final_report": final_state.get("final_report", ""),
+                "error": final_state.get("error", ""),
+            }
 
     async def start(self) -> None:
         llm_base_url = _normalize_llm_base_url(LLM_API_URL)
