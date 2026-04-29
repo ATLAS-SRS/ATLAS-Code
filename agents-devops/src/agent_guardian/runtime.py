@@ -360,6 +360,9 @@ class SREGuardianRuntime:
                         "set_replicas",
                         "get_hpa_limits",
                         "set_hpa_max_replicas",
+                        "get_budget_state",
+                        "plan_budget_allocation",
+                        "execute_budget_allocation",
                     }
                 }
             else:
