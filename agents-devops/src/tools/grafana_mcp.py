@@ -2,6 +2,8 @@ import os
 import json
 from typing import Any, Awaitable, Callable
 
+from kubernetes.client.rest import ApiException
+
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from langchain_core.tools import StructuredTool

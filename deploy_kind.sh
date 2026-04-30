@@ -435,7 +435,7 @@ deploy_app_layer() {
 		ensure_llm_credentials_secret
 		log "Deploying agent-guardian"
 		kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
-		rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
+		rollout_or_debug deployment atlas-guardian-agent "app.kubernetes.io/name=atlas-guardian-agent"
 	else
 		log "Scaling agent manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
 	fi

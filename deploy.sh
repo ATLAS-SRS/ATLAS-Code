@@ -206,6 +206,7 @@ build_images() {
   docker build -t atlas/scoring-system:fix-readiness-2 -f scoring-system/Dockerfile scoring-system/
   docker build -t atlas/notification-system:latest -f notification-system/Dockerfile notification-system/
   docker build -t atlas/agent-guardian:latest -f agents-devops/Dockerfile agents-devops/
+  docker build -t atlas/agent-chaos:latest -f agents-chaos/Dockerfile agents-chaos/
   docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
 
   log "Docker images built successfully"
@@ -343,9 +344,18 @@ deploy_app_layer() {
     ensure_llm_credentials_secret
     log "Deploying agent-guardian"
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
-    rollout_or_debug deployment atlas-aiops-agent "app.kubernetes.io/name=atlas-aiops-agent"
+    rollout_or_debug deployment atlas-guardian-agent "app.kubernetes.io/name=atlas-guardian-agent"
   else
     log "agent-guardian manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
+  fi
+
+  local CHAOS_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-chaos.yaml"
+  if [[ -f "$CHAOS_AGENT_MANIFEST" ]]; then
+    log "Deploying agent-chaos"
+    kubectl apply -n "$NAMESPACE" -f "$CHAOS_AGENT_MANIFEST"
+    rollout_or_debug deployment atlas-chaos-agent "app=agent-chaos"
+  else
+    log "agent-chaos manifest not found at ${CHAOS_AGENT_MANIFEST}, skipping"
   fi
 
   log "App layer deployed"
@@ -404,6 +414,48 @@ deploy_plt() {
   fi
 
   kubectl rollout status "statefulset/${prom_sts}" -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+  log "Generating Grafana Service Account Token for MCP server..."
+
+	# 1. Port-forward temporaneo in background
+    # Usiamo & per non bloccare lo script e catturiamo il PID per chiuderlo dopo
+    kubectl port-forward -n "$NAMESPACE" svc/atlas-monitoring-grafana 3000:80 >/dev/null 2>&1 &
+    local PF_PID=$!
+    
+    # Attendiamo che il port-forward sia attivo
+    sleep 5
+
+	local GRAFANA_API_URL="http://admin:${GRAFANA_ADMIN_PASSWORD}@localhost:3000/api"
+
+	# 2. Creazione Service Account (se non esiste già)
+    # Cerchiamo se esiste già un SA chiamato 'mcp-server'
+    local SA_ID=$(curl -s "$GRAFANA_API_URL/serviceaccounts/search?query=mcp-server" | jq -r '.serviceAccounts[0].id // empty')
+
+    if [[ -z "$SA_ID" ]]; then
+        log "Creating new Service Account 'mcp-server'"
+        SA_ID=$(curl -s -X POST "$GRAFANA_API_URL/serviceaccounts" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"mcp-server", "role": "Admin"}' | jq -r '.id')
+    fi
+
+    # 3. Generazione di un nuovo Token
+    # Nota: I token di Grafana non sono recuperabili dopo la creazione, 
+    # quindi ne creiamo uno nuovo e aggiorniamo il secret.
+    log "Generating new API Token..."
+    local NEW_TOKEN=$(curl -s -X POST "$GRAFANA_API_URL/serviceaccounts/$SA_ID/tokens" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"mcp-token-'"$(date +%s)"'"}' | jq -r '.key')
+
+    # 4. Aggiornamento Secret Kubernetes
+    kubectl create secret generic grafana-mcp-credentials \
+        --namespace "$NAMESPACE" \
+        --from-literal=token="$NEW_TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    # Chiudiamo il port-forward
+    kill $PF_PID
+    log "Grafana MCP credentials secret updated."
+
 
   log "PLT stack deployed"
 }
@@ -523,7 +575,8 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/enrichment-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/scoring-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
-  kubectl logs -n ${NAMESPACE} deploy/atlas-aiops-agent --tail=100
+  kubectl logs -n ${NAMESPACE} deploy/atlas-guardian-agent --tail=100
+  kubectl logs -n ${NAMESPACE} deploy/atlas-chaos-agent --tail=100
 
 Endpoints (tramite NGINX Ingress & nip.io):
   API Gateway:   http://fraud-api.127.0.0.1.nip.io

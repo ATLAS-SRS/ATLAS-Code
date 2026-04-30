@@ -276,7 +276,7 @@ class SREGuardianRuntime:
             grafana_allowed = {
                 name
                 for name in tool_registry.names()
-                if name in {"query_prometheus", "query_loki_logs", "list_datasources"}
+                if name in {"query_prometheus", "query_loki_logs", "list_datasources", "get_deployment_resources"}
             }
 
             if not grafana_allowed:
@@ -325,7 +325,7 @@ class SREGuardianRuntime:
             k8s_allowed = {
                 name
                 for name in tool_registry.names()
-                if name in {"get_current_replicas", "set_replicas"}
+                if name in {"get_current_replicas", "set_replicas", "restore_cpu_limits"}
             }
 
             if not k8s_allowed:

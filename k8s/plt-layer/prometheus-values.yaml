@@ -45,7 +45,7 @@ alertmanager:
     - name: 'agent-webhook'
       webhook_configs:
       # Punta al service del tuo orchestratore di agenti
-      - url: 'http://atlas-aiops-service.default.svc.cluster.local:8000/webhook' # TODO: Sostituisci con l'URL corretto del tuo orchestratore di agenti
+      - url: 'http://atlas-guardian-service.default.svc.cluster.local:8000/webhook' # TODO: Sostituisci con l'URL corretto del tuo orchestratore di agenti
         send_resolved: true
 
 nodeExporter:

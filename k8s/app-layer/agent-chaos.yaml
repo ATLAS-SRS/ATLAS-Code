@@ -1,72 +1,73 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: atlas-guardian-sa
+  name: atlas-chaos-sa
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: atlas-guardian-role
+  name: atlas-chaos-role
   namespace: default
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale", "deployments/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: atlas-guardian-binding
+  name: atlas-chaos-binding
   namespace: default
 subjects:
   - kind: ServiceAccount
-    name: atlas-guardian-sa
+    name: atlas-chaos-sa
     namespace: default
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: atlas-guardian-role
+  name: atlas-chaos-role
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: atlas-guardian-agent
+  name: atlas-chaos-agent
   namespace: default
   labels:
-    app: agent-guardian
-    app.kubernetes.io/name: atlas-guardian-agent
-    app.kubernetes.io/part-of: atlas-guardian
+    app: agent-chaos
+    app.kubernetes.io/name: atlas-chaos-agent
+    app.kubernetes.io/part-of: atlas-chaos
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: agent-guardian
+      app: agent-chaos
   template:
     metadata:
       labels:
-        app: agent-guardian
-        app.kubernetes.io/name: atlas-guardian-agent
-        app.kubernetes.io/part-of: atlas-guardian
+        app: agent-chaos
+        app.kubernetes.io/name: atlas-chaos-agent
+        app.kubernetes.io/part-of: atlas-chaos
     spec:
-      serviceAccountName: atlas-guardian-sa
+      serviceAccountName: atlas-chaos-sa
       containers:
-        - name: agent-guardian
-          image: atlas/agent-guardian:latest
+        - name: agent-chaos
+          image: atlas/agent-chaos:latest
           imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
           env:
             - name: NAMESPACE
               value: "default"
             - name: TARGET_DEPLOYMENTS
               value: "api-gateway,scoring-system,enrichment-system,notification-system"
-            - name: PROMETHEUS_URL
-              value: "http://atlas-monitoring-kube-prom-prometheus.default.svc.cluster.local:9090"
-            - name: GRAFANA_MCP_URL
-              value: "http://grafana-mcp-service.default.svc.cluster.local:80/sse"
             - name: LLM_API_URL
               value: "https://litellm-proxy-1013932759942.europe-west8.run.app"
             - name: LLM_MODEL
-              value: "gemini-2.5-pro" #"google/gemma-3-12b" or "local-model" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
+              value: "gemini-2.5-pro"
             - name: OPTIMIZE_CONTEXT
               value: "false"
             - name: LLM_API_KEY
@@ -74,12 +75,6 @@ spec:
                 secretKeyRef:
                   name: llm-credentials
                   key: LLM_API_KEY
-            - name: LM_STUDIO_URL
-              value: "http://host.docker.internal:1234/v1"
-            - name: LMSTUDIO_BASE_URL
-              value: "http://host.docker.internal:1234/v1"
-            - name: LMSTUDIO_MODEL
-              value: "google/gemma-3-12b"
           resources:
             requests:
               cpu: 50m
@@ -91,15 +86,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: atlas-guardian-service
+  name: atlas-chaos-service
   namespace: default
   labels:
-    app: agent-guardian
+    app: agent-chaos
 spec:
   selector:
-    app: agent-guardian # Deve corrispondere alle label del Deployment
+    app: agent-chaos
   ports:
     - protocol: TCP
-      port: 8000       # La porta su cui Kubernetes espone il servizio
-      targetPort: 8000 # La porta su cui è in ascolto il codice Python/FastAPI del tuo collega
+      port: 8001
+      targetPort: 8001
   type: ClusterIP
