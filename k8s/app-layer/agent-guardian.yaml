@@ -13,6 +13,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale", "deployments/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -59,6 +62,16 @@ spec:
               value: "default"
             - name: TARGET_DEPLOYMENTS
               value: "api-gateway,scoring-system,enrichment-system,notification-system"
+            - name: BUDGET_MAX_REPLICAS
+              value: "2"
+            - name: EMERGENCY_MAX_REPLICAS
+              value: "5"
+            - name: TOTAL_REPLICA_BUDGET
+              value: "8"
+            - name: DEPLOYMENT_MIN_REPLICAS
+              value: "api-gateway=1,scoring-system=1,enrichment-system=1,notification-system=1"
+            - name: DEPLOYMENT_POD_COSTS
+              value: "api-gateway=1,scoring-system=1,enrichment-system=1,notification-system=1"
             - name: PROMETHEUS_URL
               value: "http://atlas-monitoring-kube-prom-prometheus.default.svc.cluster.local:9090"
             - name: GRAFANA_MCP_URL

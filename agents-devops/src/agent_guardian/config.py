@@ -16,12 +16,28 @@ LLM_API_URL = (
 MAX_TOOL_STEPS = int(os.getenv("MAX_TOOL_STEPS", "6"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "90"))
 
-DEFAULT_TARGET_DEPLOYMENTS = "api-gateway,scoring-system,enrichment-system,notification-system"
-TARGET_DEPLOYMENTS = {
+DEFAULT_AUTOSCALABLE_DEPLOYMENTS = "api-gateway,scoring-system,enrichment-system,notification-system"
+AUTOSCALABLE_DEPLOYMENTS = {
     item.strip()
-    for item in os.getenv("TARGET_DEPLOYMENTS", DEFAULT_TARGET_DEPLOYMENTS).split(",")
+    for item in os.getenv("AUTOSCALABLE_DEPLOYMENTS", DEFAULT_AUTOSCALABLE_DEPLOYMENTS).split(",")
     if item.strip()
 }
+
+DEFAULT_MONITORED_WORKLOADS = (
+    f"{DEFAULT_AUTOSCALABLE_DEPLOYMENTS},atlas-postgres-postgresql,atlas-redis-master"
+)
+MONITORED_WORKLOADS = {
+    item.strip()
+    for item in os.getenv("MONITORED_WORKLOADS", DEFAULT_MONITORED_WORKLOADS).split(",")
+    if item.strip()
+}
+
+MONITORED_ONLY_WORKLOADS = {
+    workload for workload in MONITORED_WORKLOADS if workload not in AUTOSCALABLE_DEPLOYMENTS
+}
+
+# Backwards-compatible alias for existing callers that still expect the old name.
+TARGET_DEPLOYMENTS = AUTOSCALABLE_DEPLOYMENTS
 
 def _normalize_llm_base_url(url: str) -> str:
     clean = url.rstrip("/")

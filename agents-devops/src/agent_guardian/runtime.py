@@ -169,12 +169,39 @@ class SREGuardianRuntime:
 
     async def _register_grafana_tools(self) -> None:
         self._grafana_manager = GrafanaMCPManager()
-        try:
-            grafana_tools = await self._grafana_manager.get_tools(LLM_MODEL)
-        except Exception as exc:
+        max_attempts = int(os.getenv("GRAFANA_MCP_MAX_RETRIES", "5"))
+        retry_delay_seconds = float(os.getenv("GRAFANA_MCP_RETRY_DELAY_SECONDS", "2"))
+
+        grafana_tools = None
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                grafana_tools = await self._grafana_manager.get_tools(LLM_MODEL)
+                break
+            except Exception as exc:
+                last_error = exc
+                LOGGER.warning(
+                    "Grafana MCP tool load attempt failed",
+                    extra={
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "error_repr": repr(exc),
+                    },
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(retry_delay_seconds)
+
+        if grafana_tools is None:
             LOGGER.error(
-                "Grafana MCP unavailable at startup; continuing without Grafana tools",
-                extra={"error": str(exc)},
+                "Grafana MCP unavailable at startup after retries; continuing without Grafana tools",
+                extra={
+                    "max_attempts": max_attempts,
+                    "error": str(last_error) if last_error else "unknown",
+                    "error_type": type(last_error).__name__ if last_error else "unknown",
+                    "error_repr": repr(last_error) if last_error else "unknown",
+                },
             )
             return
 
@@ -262,6 +289,7 @@ class SREGuardianRuntime:
                     "alert_name": parsed.get("alert_name", "unknown"),
                     "severity": parsed.get("severity", "unknown"),
                     "deployment": parsed.get("deployment", ""),
+                    "workload_policy": parsed.get("workload_policy", "UNMONITORED"),
                     "status": parsed.get("status", "unknown"),
                 },
             )
@@ -308,6 +336,7 @@ class SREGuardianRuntime:
             full_alert = state.get("alert") or {}
             investigation_report = state.get("investigation_report", "")
             deployment = parsed_alert.get("deployment", "")
+            workload_policy = parsed_alert.get("workload_policy", "UNMONITORED")
 
             if not deployment:
                 report = _safe_json(
@@ -322,26 +351,54 @@ class SREGuardianRuntime:
                 )
                 return {"final_report": report}
 
-            k8s_allowed = {
-                name
-                for name in tool_registry.names()
-                if name in {"get_current_replicas", "set_replicas", "restore_cpu_limits"}
-            }
+            if workload_policy == "AUTOSCALE":
+                k8s_allowed = {
+                    name
+                    for name in tool_registry.names()
+                    if name in {
+                        "get_current_replicas",
+                        "set_replicas",
+                        "get_hpa_limits",
+                        "set_hpa_max_replicas",
+                        "get_budget_state",
+                        "plan_budget_allocation",
+                        "execute_budget_allocation",
+                        "restore_cpu_limits"
+                    }
+                }
+            else:
+                k8s_allowed = set()
 
             if not k8s_allowed:
                 msg = _safe_json(
                     {
                         "action": "HOLD",
                         "deployment": deployment,
-                        "rationale": "No K8s MCP action tools available",
+                        "rationale": (
+                            "No K8s MCP scaling tools are available for this workload policy"
+                            if workload_policy != "AUTOSCALE"
+                            else "No K8s MCP action tools available"
+                        ),
                         "executed_tools": [],
                         "outcome": "No scaling action",
-                        "follow_up": "Validate stdio connection to k8s MCP server",
+                        "follow_up": (
+                            "Monitor and diagnose the database or other non-scalable workload; do not scale it"
+                            if workload_policy != "AUTOSCALE"
+                            else "Validate stdio connection to k8s MCP server"
+                        ),
                     }
                 )
-                return {"final_report": msg, "error": "missing_k8s_tools"}
+                return {
+                    "final_report": msg,
+                    "error": "missing_k8s_tools" if workload_policy == "AUTOSCALE" else "monitor_only_workload",
+                }
 
-            system_prompt, user_prompt = _reasoning_prompt(parsed_alert, full_alert, investigation_report)
+            system_prompt, user_prompt = _reasoning_prompt(
+                parsed_alert,
+                full_alert,
+                investigation_report,
+                workload_policy,
+            )
             final_report, trace = await _run_llm_tool_loop(
                 llm_client=llm_client,
                 model=LLM_MODEL,

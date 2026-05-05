@@ -1,7 +1,16 @@
 import json
 from typing import Any
-from langchain_core.tools import StructuredTool
-from src.agent_guardian.config import TARGET_DEPLOYMENTS
+
+try:
+    from langchain_core.tools import StructuredTool
+except ImportError:  # pragma: no cover - fallback for lightweight unit tests
+    StructuredTool = Any
+
+from src.agent_guardian.config import (
+    AUTOSCALABLE_DEPLOYMENTS,
+    MONITORED_ONLY_WORKLOADS,
+    MONITORED_WORKLOADS,
+)
 
 def _safe_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=True, default=str)
@@ -38,6 +47,50 @@ def _tool_call_parts(tool_call: Any) -> tuple[str, str, str]:
         getattr(fn, "arguments", "{}") or "{}"
     )
 
+def _normalize_workload_name(workload_hint: str) -> str:
+    raw_hint = (workload_hint or "").strip()
+    if not raw_hint:
+        return ""
+
+    candidates = [raw_hint.lower()]
+    if "/" in candidates[0]:
+        candidates.append(candidates[0].rsplit("/", 1)[-1])
+
+    alias_map = {
+        "postgresql": "atlas-postgres-postgresql",
+        "atlas-postgres": "atlas-postgres-postgresql",
+        "redis": "atlas-redis-master",
+        "atlas-redis": "atlas-redis-master",
+    }
+
+    for candidate in candidates:
+        if candidate in alias_map:
+            return alias_map[candidate]
+
+    for candidate in candidates:
+        for workload in sorted(MONITORED_WORKLOADS, key=len, reverse=True):
+            if (
+                candidate == workload
+                or candidate.startswith(f"{workload}-")
+                or candidate.startswith(f"{workload}.")
+                or candidate.startswith(f"{workload}_")
+            ):
+                return workload
+
+    for candidate in candidates:
+        if candidate in MONITORED_WORKLOADS:
+            return candidate
+
+    return raw_hint
+
+def _classify_workload(workload_hint: str) -> tuple[str, str]:
+    workload = _normalize_workload_name(workload_hint)
+    if workload in AUTOSCALABLE_DEPLOYMENTS:
+        return workload, "AUTOSCALE"
+    if workload in MONITORED_ONLY_WORKLOADS:
+        return workload, "MONITOR_ONLY"
+    return workload, "UNMONITORED"
+
 def _extract_alert_fields(alert: dict[str, Any]) -> dict[str, Any]:
     labels = alert.get("labels") or {}
     annotations = alert.get("annotations") or {}
@@ -50,11 +103,7 @@ def _extract_alert_fields(alert: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
 
-    deployment = deployment_hint.strip()
-    if deployment and deployment not in TARGET_DEPLOYMENTS:
-        maybe_name = deployment.split("-")[0]
-        if maybe_name in TARGET_DEPLOYMENTS:
-            deployment = maybe_name
+    deployment, workload_policy = _classify_workload(deployment_hint)
 
     return {
         "alert_name": labels.get("alertname", "unknown"),
@@ -63,6 +112,7 @@ def _extract_alert_fields(alert: dict[str, Any]) -> dict[str, Any]:
         "description": annotations.get("description", ""),
         "status": alert.get("status", "unknown"),
         "deployment": deployment,
+        "workload_policy": workload_policy,
         "labels": labels,
         "startsAt": alert.get("startsAt", ""),
         "endsAt": alert.get("endsAt", ""),
