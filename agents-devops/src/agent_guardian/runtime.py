@@ -17,6 +17,13 @@ from .config import (
     LOGGER, LLM_API_URL, LLM_API_KEY, LLM_MODEL,
     _normalize_llm_base_url, _resolve_k8s_mcp_script, MAX_TOOL_STEPS
 )
+from .models import (
+    ActionDecisionModel,
+    AlertContextModel,
+    ExecutionDetailsModel,
+    IncidentReportModel,
+    InvestigationReportModel,
+)
 from .registry import ToolRegistry, ToolDef
 from .utils import (
     _structured_tool_schema, _invoke_langchain_tool,
@@ -418,7 +425,7 @@ class SREGuardianRuntime:
 
             LOGGER.info(
                 "Investigation completed",
-                extra={"deployment": deployment, "report": report[:500]},
+                extra={"deployment": deployment, "report": report},
             )
             return {"investigation_report": report, "llm_trace": trace}
 
@@ -504,7 +511,7 @@ class SREGuardianRuntime:
 
             LOGGER.info(
                 "Reasoning and action completed",
-                extra={"deployment": deployment, "final_report": final_report[:500]},
+                extra={"deployment": deployment, "final_report": final_report},
             )
 
             merged_trace = list(state.get("llm_trace") or []) + trace
@@ -520,20 +527,75 @@ class SREGuardianRuntime:
             timestamp_utc = timestamp_dt.isoformat().replace("+00:00", "Z")
             incident_id = _incident_id(raw_alert, parsed_alert)
 
-            alert_context = {
-                "alert_name": parsed_alert.get("alert_name", "unknown"),
-                "severity": parsed_alert.get("severity", "unknown"),
-                "status": parsed_alert.get("status", "unknown"),
-                "deployment": parsed_alert.get("deployment", ""),
-                "workload_policy": parsed_alert.get("workload_policy", "UNMONITORED"),
-                "summary": parsed_alert.get("summary", ""),
-                "description": parsed_alert.get("description", ""),
-                "startsAt": parsed_alert.get("startsAt", ""),
-                "endsAt": parsed_alert.get("endsAt", ""),
-                "fingerprint": raw_alert.get("fingerprint", ""),
-                "generatorURL": raw_alert.get("generatorURL", ""),
-                "labels": parsed_alert.get("labels") or {},
-            }
+            alert_context = AlertContextModel.model_validate(
+                {
+                    "alert_name": parsed_alert.get("alert_name", "unknown"),
+                    "severity": parsed_alert.get("severity", "unknown"),
+                    "status": parsed_alert.get("status", "unknown"),
+                    "deployment": parsed_alert.get("deployment", ""),
+                    "workload_policy": parsed_alert.get("workload_policy", "UNMONITORED"),
+                    "summary": parsed_alert.get("summary", ""),
+                    "description": parsed_alert.get("description", ""),
+                    "startsAt": parsed_alert.get("startsAt", ""),
+                    "endsAt": parsed_alert.get("endsAt", ""),
+                    "fingerprint": raw_alert.get("fingerprint", ""),
+                    "generatorURL": raw_alert.get("generatorURL", ""),
+                    "labels": parsed_alert.get("labels") or {},
+                }
+            )
+
+            investigation_report = InvestigationReportModel.model_validate(
+                {
+                    "verdict": investigation.get("verdict", "UNKNOWN"),
+                    "confidence": investigation.get("confidence"),
+                    "evidence": investigation.get("evidence", []),
+                    "recommended_next_step": investigation.get("recommended_next_step", ""),
+                }
+            )
+
+            action_decision = ActionDecisionModel.model_validate(
+                {
+                    "action": final_report.get("action", "UNKNOWN"),
+                    "deployment": final_report.get("deployment", alert_context.deployment),
+                    "rationale": final_report.get("rationale", ""),
+                    "executed_tools": final_report.get("executed_tools") or _extract_tool_names(trace),
+                    "outcome": final_report.get("outcome", ""),
+                    "follow_up": final_report.get("follow_up", ""),
+                    "detailed_incident_report": final_report.get(
+                        "detailed_incident_report",
+                        final_report.get("outcome", state.get("final_report", "")),
+                    ),
+                    "human_approval": final_report.get("human_approval", final_report.get("approval", "not_required")),
+                    "approval": final_report.get("approval"),
+                }
+            )
+
+            structured_report = IncidentReportModel.model_validate(
+                {
+                    "incident_id": incident_id,
+                    "first_seen_utc": timestamp_utc,
+                    "last_seen_utc": timestamp_utc,
+                    "timestamp_utc": timestamp_utc,
+                    "occurrence_count": 0,
+                    "current_status": alert_context.status,
+                    "alert_context": alert_context,
+                    "investigation": investigation_report,
+                    "execution_details": ExecutionDetailsModel(
+                        action=action_decision,
+                        deployment=action_decision.deployment or alert_context.deployment,
+                        replicas=_extract_replica_details(final_report, trace),
+                        human_approval=action_decision.human_approval,
+                        rationale=action_decision.rationale,
+                        executed_tools=action_decision.executed_tools,
+                        outcome=action_decision.outcome,
+                        follow_up=action_decision.follow_up,
+                    ),
+                    "final_summary": action_decision.detailed_incident_report
+                    or action_decision.outcome
+                    or state.get("final_report", ""),
+                    "error": state.get("error", ""),
+                }
+            )
 
             async with get_async_session() as session:
                 existing_report = await fetch_incident_report(session, incident_id) or {}
@@ -541,46 +603,26 @@ class SREGuardianRuntime:
                 occurrence_count = int(existing_report.get("occurrence_count", 0)) + 1
                 first_seen_utc = existing_report.get("first_seen_utc") or timestamp_utc
 
-                structured_report = {
-                    "incident_id": incident_id,
-                    "first_seen_utc": first_seen_utc,
-                    "last_seen_utc": timestamp_utc,
-                    "timestamp_utc": timestamp_utc,
-                    "occurrence_count": occurrence_count,
-                    "current_status": alert_context["status"],
-                    "alert_context": alert_context,
-                    "investigation": {
-                        "verdict": investigation.get("verdict", "UNKNOWN"),
-                        "confidence": investigation.get("confidence"),
-                        "evidence": investigation.get("evidence", []),
-                        "recommended_next_step": investigation.get("recommended_next_step", ""),
-                    },
-                    "execution_details": {
-                        "action": final_report.get("action", "UNKNOWN"),
-                        "deployment": final_report.get("deployment", alert_context["deployment"]),
-                        "replicas": _extract_replica_details(final_report, trace),
-                        "human_approval": final_report.get("human_approval", final_report.get("approval", "not_required")),
-                        "rationale": final_report.get("rationale", ""),
-                        "executed_tools": final_report.get("executed_tools") or _extract_tool_names(trace),
-                        "outcome": final_report.get("outcome", ""),
-                        "follow_up": final_report.get("follow_up", ""),
-                    },
-                    "final_summary": final_report.get(
-                        "detailed_incident_report",
-                        final_report.get("outcome", state.get("final_report", "")),
-                    ),
-                    "error": state.get("error", ""),
-                }
+                structured_report = structured_report.model_copy(
+                    update={
+                        "first_seen_utc": first_seen_utc,
+                        "last_seen_utc": timestamp_utc,
+                        "timestamp_utc": timestamp_utc,
+                        "occurrence_count": occurrence_count,
+                    }
+                )
+
+                report_data = structured_report.model_dump(mode="json", exclude_none=True)
 
                 await upsert_incident_report(
                     session,
                     incident_id=incident_id,
                     timestamp_utc=timestamp_dt,
-                    deployment=alert_context["deployment"] or "unknown",
-                    report_data=structured_report,
+                    deployment=structured_report.alert_context.deployment or "unknown",
+                    report_data=report_data,
                 )
 
-            formatted_report = json.dumps(structured_report, indent=2, ensure_ascii=True, default=str)
+            formatted_report = json.dumps(report_data, indent=2, ensure_ascii=True, default=str)
             print(formatted_report, flush=True)
 
             LOGGER.info(
@@ -589,7 +631,7 @@ class SREGuardianRuntime:
             )
             return {
                 "incident_id": incident_id,
-                "post_mortem_report": structured_report,
+                "post_mortem_report": report_data,
                 "post_mortem_path": f"db://incident_reports/{incident_id}",
             }
 
