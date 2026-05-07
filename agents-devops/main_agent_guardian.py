@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 from typing import Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from src.agent_guardian.runtime import SREGuardianRuntime
 from src.agent_guardian.config import LOGGER
-from src.agent_guardian.utils import _safe_json
 
 runtime = SREGuardianRuntime()
 
@@ -29,8 +28,23 @@ app = FastAPI(
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
+async def _process_alerts_in_background(alerts: list[dict[str, Any]]) -> None:
+    for idx, alert in enumerate(alerts):
+        try:
+            await runtime.process_alert(alert, idx)
+        except Exception as exc:
+            LOGGER.error(
+                "Unhandled background agent execution error",
+                extra={
+                    "index": idx,
+                    "alert_name": (alert.get("labels") or {}).get("alertname", "unknown"),
+                    "deployment": (alert.get("labels") or {}).get("service", ""),
+                    "error": str(exc),
+                },
+            )
+
 @app.post("/webhook")
-async def webhook(payload: dict[str, Any]) -> JSONResponse:
+async def webhook(payload: dict[str, Any], background_tasks: BackgroundTasks) -> JSONResponse:
     alerts = payload.get("alerts")
     if not isinstance(alerts, list):
         raise HTTPException(status_code=400, detail="Invalid Alertmanager payload: missing alerts list")
@@ -47,37 +61,11 @@ async def webhook(payload: dict[str, Any]) -> JSONResponse:
         },
     )
 
-    if not firing_alerts:
-        return JSONResponse(
-            status_code=200,
-            content={"status": "ignored", "message": "No firing alerts in payload", "results": []},
-        )
-
-    results: list[dict[str, Any]] = []
-    for idx, alert in enumerate(firing_alerts):
-        try:
-            results.append(await runtime.process_alert(alert, idx))
-        except Exception as exc:
-            LOGGER.error("Unhandled agent execution error", extra={"index": idx, "error": str(exc)})
-            results.append(
-                {
-                    "index": idx,
-                    "status": "error",
-                    "alert_name": (alert.get("labels") or {}).get("alertname", "unknown"),
-                    "deployment": (alert.get("labels") or {}).get("service", ""),
-                    "investigation_report": "",
-                    "final_report": _safe_json(
-                        {
-                            "action": "HOLD",
-                            "rationale": "Internal agent exception during execution",
-                            "outcome": "No action",
-                        }
-                    ),
-                    "error": str(exc),
-                }
-            )
-
-    return JSONResponse(status_code=200, content={"status": "processed", "results": results})
+    background_tasks.add_task(_process_alerts_in_background, firing_alerts)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "accepted", "message": "Alerts queued for background processing"},
+    )
 
 if __name__ == "__main__":
     import uvicorn

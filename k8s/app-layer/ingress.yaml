@@ -31,3 +31,28 @@ spec:
                 name: locust-master-ui
                 port:
                   number: 8089
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atlas-guardian-dashboard-ingress
+  labels:
+    app.kubernetes.io/name: atlas-guardian-agent
+    app.kubernetes.io/part-of: atlas-guardian
+    app.kubernetes.io/component: dashboard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: guardian-report.127.0.0.1.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atlas-guardian-dashboard-service
+                port:
+                  number: 8501

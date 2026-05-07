@@ -105,16 +105,11 @@ Use this option when ATLAS is deployed on Kubernetes.
 Prerequisites:
 - NGINX Ingress Controller installed and running in the cluster
 - Ingress resource `api-gateway-ingress` applied
-- Local hosts entry mapping `fraud-api.local` to localhost:
-
-```text
-127.0.0.1 fraud-api.local
-```
 
 Run Locust against the ingress host:
 
 ```bash
-locust -f locust/locustfile.py --host=http://fraud-api.local
+locust -f locust/locustfile.py --host=http://fraud-api.127.0.0.1.nip.io
 ```
 
 Quick verification before starting Locust:
@@ -122,7 +117,7 @@ Quick verification before starting Locust:
 ```bash
 python3 - <<'PY'
 import urllib.request
-with urllib.request.urlopen('http://fraud-api.local/health/live', timeout=3) as r:
+with urllib.request.urlopen('http://fraud-api.127.0.0.1.nip.io/health/live', timeout=3) as r:
     print(r.status)
     print(r.read().decode())
 PY
@@ -146,29 +141,55 @@ locust -f locust/locustfile.py --host=http://localhost:8000 --headless -u 100 -r
 docker compose up -d --build --scale transaction-client=0
 ```
 
-## Scaling Agent
+## SRE Guardian & Trend Reporting
 
-The platform now uses a single all-in-one scaling runtime.
+The platform uses the `agents-devops` SRE Guardian runtime for alert intake, investigation, remediation reasoning, and post-mortem reporting, combined with the Trend Reporting Agent for incident pattern analysis.
 
-### All-in-One Kubernetes MCP Agent
-- Runs from `agents-orchestrator/mcp_client.py` and is started by `agents-orchestrator/Dockerfile`
-- Spawns `agents-orchestrator/mcp_server.py` locally over stdio in the same container
-- Reads global ingress load from Prometheus using `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
-- Applies one global RPS reading to the configured deployment set
-- Scales deployments sequentially in one loop with the default order `api-gateway,scoring-system,enrichment-system,notification-system`
+### Guardian Container
+- Runs from `agents-devops/main_agent_guardian.py`
+- Exposes a FastAPI webhook on port `8000`
+- Spawns `agents-devops/k8s_mcp.py` locally over stdio for Kubernetes control
+- Investigates alerts with Grafana MCP and executes remediation reasoning with LangGraph
 
-Key environment variables:
-- `TARGET_DEPLOYMENTS`
-- `PROMQL_RPS_QUERY`
-- `CHECK_INTERVAL`, `MIN_REPLICAS`, `MAX_REPLICAS`, `NAMESPACE`
-- `LM_STUDIO_URL`, `LLM_API_URL`, `LLM_MODEL`
-- `MAX_TOOL_STEPS`, `RPS_REPLICA_THRESHOLDS`
+### Trend Reporting Agent (Dashboard + Health Server)
+- **Multi-process orchestration** via `agents-devops/entrypoint.sh`:
+  - `uvicorn main_agent_guardian:app` on port `8000` (FastAPI webhook)
+  - `python src/agent_trend/health_server.py` on port `8002` (liveness + readiness probes)
+  - `streamlit run src/agent_trend/dashboard.py` on port `8501` (interactive post-mortem dashboard)
+- **Dashboard features**:
+  - Real-time incident visualization via Streamlit
+  - Trend analysis with LLM-generated insights
+  - Exposed through Kubernetes ingress at `http://guardian-report.127.0.0.1.nip.io`
+- **Health checks**:
+  - `/health` endpoint: Always returns 200 (liveness probe)
+  - `/ready` endpoint: Returns 503 if database unreachable (readiness probe)
+  - Used by Kubernetes for pod lifecycle management
 
-### MCP Tools
-- `get_rps`: read the global RPS from Prometheus
-- `get_current_replicas`: read deployment replica count from Kubernetes
-- `set_replicas`: update deployment replicas within guardrails
-- `get_scaling_recommendation`: combine current load and replica state into a target action
+
+### Configuration & Environment Variables
+
+**Guardian Runtime Variables**:
+- `TARGET_DEPLOYMENTS`: Kubernetes deployments to monitor
+- `NAMESPACE`: Kubernetes namespace (default: `default`)
+- `LM_STUDIO_URL` / `LLM_API_URL`: OpenAI-compatible LLM endpoint
+- `LLM_MODEL` / `LM_MODEL`: Model name to use (e.g., `gpt-4`, `google/gemma-3-12b`)
+- `LLM_API_KEY`: API key (or "local-no-key" for local models)
+- `DATABASE_URL`: PostgreSQL connection string (required)
+- `MAX_TOOL_STEPS`: Maximum reasoning steps per incident
+- `RPS_REPLICA_THRESHOLDS`: CPU/memory scaling thresholds
+- `REPORTS_DIR`: Output directory for incident reports
+
+**Validation**:
+- `DATABASE_URL` and either `LLM_API_URL` or `LM_STUDIO_URL` are required at startup
+- Missing required variables cause immediate failure with clear error messages
+- Config validation runs at module import time in `src/agent_guardian/config.py`
+
+### Runtime Behavior
+- FastAPI accepts Alertmanager webhooks immediately and processes firing alerts in background tasks
+- Reports are written to `reports/incidents/` and upserted by incident key, so repeated alerts update the same incident record
+- The dashboard is exposed through ingress at `http://guardian-report.127.0.0.1.nip.io`
+- The webhook endpoint stays internal to the cluster at `http://atlas-guardian-service.default.svc.cluster.local:8000/webhook`
+- Health probes on port `8002` allow Kubernetes to monitor pod readiness and restart unhealthy instances
 
 ### LM Studio Support
 - `LM_STUDIO_URL`, `LMSTUDIO_BASE_URL`, or `LLM_API_URL` point to the OpenAI-compatible local model server
@@ -176,10 +197,93 @@ Key environment variables:
 - The Kubernetes manifest uses `http://host.docker.internal:1234/v1` in Docker Desktop
 - Invalid model output is handled safely inside the client loop
 
+### Critical Production Fixes
+
+The following issues have been identified and resolved to ensure system reliability:
+
+**1. Silent Exception Handling** (`agents-devops/src/agent_trend/trend_analyzer.py`)
+- Changed bare `except Exception:` to `except ImportError:` with logged error message
+- Impact: Import errors now surfaced immediately instead of silently swallowed
+- Status: ✅ Fixed and tested
+
+**2. Environment Variable Validation** (`agents-devops/src/agent_guardian/config.py`)
+- Added `_validate_config()` function called at module import time
+- Checks: `DATABASE_URL` required, either `LLM_API_URL` or `LM_STUDIO_URL` required
+- Impact: Missing critical env vars detected at startup with clear error messages
+- Status: ✅ Fixed and validated
+
+**3. Duplicate Dashboard Removal**
+- Consolidated multiple dashboard implementations into single source of truth: `agents-devops/src/agent_trend/dashboard.py`
+- Impact: Reduced maintenance burden and confusion about active dashboard version
+- Status: ✅ Resolved
+
+**4. Kubernetes Health Checks** (`agents-devops/src/agent_trend/health_server.py`)
+- Created dedicated FastAPI health server on port `8002`
+- Endpoints: `/health` (liveness), `/ready` (readiness with database check)
+- K8s probes configured with appropriate timeouts: 30s initial delay, 10s period for liveness; 15s delay, 5s period for readiness
+- Status: ✅ Deployed and working
+
+### Deployment Checklist
+
+When deploying to Kubernetes with `bash deploy.sh --build`:
+
+- [ ] Verify Docker images build successfully (check output for "Images built successfully")
+- [ ] Confirm all Kubernetes manifests applied (check for "unchanged" or "configured" status)
+- [ ] Wait for all pod rollouts: `kubectl get pods -w`
+- [ ] Test API Gateway health: `curl http://fraud-api.127.0.0.1.nip.io/health/live`
+- [ ] Test Guardian webhook health: `kubectl exec -it deployment/atlas-guardian-agent -- curl localhost:8000/health`
+- [ ] Test health probes on dashboard pod: `kubectl port-forward svc/atlas-guardian-dashboard-service 8002:8002 && curl localhost:8002/ready`
+- [ ] Verify Grafana Mcp server is running: `kubectl logs deployment/grafana-mcp-server | tail -20`
+- [ ] Access Guardian dashboard at `http://guardian-report.127.0.0.1.nip.io`
+- [ ] Confirm Locust ConfigMap mounted (check `kubectl describe configmap locust-script`)
+- [ ] Start Locust: `locust -f locust/locustfile.py --host=http://fraud-api.127.0.0.1.nip.io`
+
 ### Development
-- Update `agents-orchestrator/mcp_server.py` when you need new tools
-- Update `agents-orchestrator/mcp_client.py` when you need to change the reasoning loop or tool execution flow
-- Update `k8s/app-layer/agent-guardian.yaml` when you need to change deployment-time configuration
+- Update `agents-devops/k8s_mcp.py` when you need new Kubernetes tools
+- Update `agents-devops/src/agent_trend/trend_analyzer.py` for incident trend analysis logic
+- Update `agents-devops/src/agent_trend/dashboard.py` for dashboard UI changes
+- Update `agents-devops/entrypoint.sh` when changing process orchestration (uvicorn, health server, streamlit)
+- Update `k8s/app-layer/agent-trend-report.yaml` for Kubernetes deployment configuration
+
+### Rebuild And Redeploy Guardian Agent
+```bash
+# Rebuild Docker image with entrypoint.sh
+docker build -t atlas/agent-guardian:latest agents-devops
+
+# Apply Kubernetes manifests (ServiceAccount, RBAC, Deployments, Services)
+kubectl apply -f k8s/app-layer/agent-guardian.yaml
+kubectl apply -f k8s/app-layer/agent-trend-report.yaml
+kubectl apply -f k8s/app-layer/ingress.yaml
+
+# Trigger rollout with new image
+kubectl rollout restart deployment/atlas-guardian-agent
+kubectl rollout status deployment/atlas-guardian-agent --timeout=120s
+
+# Verify all pods ready
+kubectl get pods -l app=atlas-guardian-agent -l app=atlas-guardian-dashboard
+
+# Access dashboard
+echo "Dashboard: http://guardian-report.127.0.0.1.nip.io"
+```
+
+### Monitoring Guardian Agent
+
+**Check logs for startup errors**:
+```bash
+kubectl logs deployment/atlas-guardian-dashboard -f | grep -E "(ERROR|WARN|health)"
+```
+
+**Verify health probes working**:
+```bash
+kubectl port-forward svc/atlas-guardian-dashboard-service 8002:8002
+curl -v http://localhost:8002/health    # Liveness
+curl -v http://localhost:8002/ready     # Readiness (checks DB)
+```
+
+**Restart unhealthy pod**:
+```bash
+kubectl delete pod -l app=atlas-guardian-dashboard
+```
 
 ## Monitoring & Observability
 
@@ -204,14 +308,14 @@ atlas-code/
 ├── enrichment-system/    # Enrichment engine
 ├── scoring-system/       # Fraud scoring engine
 ├── notification-system/  # Notification broker
-├── agents-orchestrator/   # MCP scaling agent
+├── agents-devops/         # SRE Guardian webhook + dashboard
 ├── monitoring/           # Prometheus config
 └── docker-compose.yml    # Orchestration
 ```
 
 ### Adding New Features
-1. Define MCP tools in `agents-orchestrator/mcp_server.py`
-2. Update `agents-orchestrator/mcp_client.py` if the reasoning loop or tool schema changes
+1. Define Kubernetes MCP tools in `agents-devops/k8s_mcp.py`
+2. Update `agents-devops/src/agent_guardian/runtime.py` if the reasoning loop or report schema changes
 3. Update `k8s/app-layer/agent-guardian.yaml` for runtime configuration changes
 4. Add Prometheus metrics for new scaling signals as needed
 
