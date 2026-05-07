@@ -117,6 +117,24 @@ def _extract_replica_summary(incident: dict[str, Any]) -> ReplicaStatus | None:
     return None
 
 
+def _extract_action_taken(incident: dict[str, Any]) -> str:
+    """Normalize legacy and structured guardian action payloads to a string."""
+    action = (incident.get("execution_details") or {}).get("action", "UNKNOWN")
+
+    if isinstance(action, str):
+        return action
+
+    if isinstance(action, dict):
+        for key in ("action", "action_taken", "decision", "type"):
+            value = action.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        return json.dumps(action, ensure_ascii=True, default=str)
+
+    return str(action) if action is not None else "UNKNOWN"
+
+
 def _occurrence_count(incident: dict[str, Any]) -> int:
     """Extract occurrence count with safe fallback."""
     try:
@@ -139,7 +157,7 @@ def _normalize_incident(incident: dict[str, Any]) -> IncidentSummary:
         incident_id=incident.get("incident_id", ""),
         time=incident.get("last_seen_utc") or incident.get("timestamp_utc", ""),
         verdict=(incident.get("investigation") or {}).get("verdict", "UNKNOWN"),
-        action_taken=(incident.get("execution_details") or {}).get("action", "UNKNOWN"),
+        action_taken=_extract_action_taken(incident),
         replicas=_extract_replica_summary(incident),
         outcome=(incident.get("execution_details") or {}).get("outcome", ""),
         follow_up=(incident.get("execution_details") or {}).get("follow_up", ""),
