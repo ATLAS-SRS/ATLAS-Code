@@ -11,7 +11,7 @@ spec:
     rules:
     - alert: HighErrorRate
       expr: sum(rate(http_requests_total{status=~"5.."}[2m])) by (service, namespace) / sum(rate(http_requests_total[2m])) by (service, namespace) > 0.05
-      for: 1m
+      for: 2m
       labels:
         severity: critical
         trigger: agent_sre
@@ -29,7 +29,7 @@ spec:
 
     - alert: CPUSaturation
       expr: sum(rate(container_cpu_usage_seconds_total{pod!=""}[1m])) by (pod, namespace) / sum(kube_pod_container_resource_limits{resource="cpu"}) by (pod, namespace) > 0.85
-      for: 1m
+      for: 2m
       labels:
         severity: warning
         trigger: agent_sre
@@ -37,8 +37,8 @@ spec:
         summary: "Saturazione CPU sul pod {{ $labels.pod }}"
 
     - alert: PodCrashLooping
-      expr: label_replace(sum by (pod, namespace) (increase(kube_pod_container_status_restarts_total{namespace="default"}[3m]) > 1), "deployment", "$1", "pod", "(.*)-[^-]+-[^-]+")
-      for: 1m
+      expr: label_replace(sum by (pod, namespace) (increase(kube_pod_container_status_restarts_total{namespace="default"}[3m]) > 2.5), "deployment", "$1", "pod", "(.*)-[^-]+-[^-]+")
+      for: 2m
       labels:
         severity: critical
         trigger: agent_sre
