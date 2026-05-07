@@ -6,6 +6,55 @@ from structured_logger import get_logger
 LOGGER = get_logger("sre-guardian", stream=sys.stderr)
 LOGGER.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
 
+
+def _validate_config() -> None:
+    """Validate critical environment variables at startup."""
+    errors = []
+    
+    # Check DATABASE_URL exists
+    if not os.getenv("DATABASE_URL"):
+        errors.append("DATABASE_URL environment variable is required")
+    
+    # Check LLM configuration
+    llm_key = os.getenv("LLM_API_KEY", "").strip()
+    llm_url = os.getenv("LLM_API_URL", "").strip() or os.getenv("LM_STUDIO_URL", "").strip()
+    
+    if not llm_key or llm_key == "local-no-key":
+        LOGGER.warning("LLM_API_KEY not configured or set to 'local-no-key'. LLM features will be limited.")
+    
+    if not llm_url:
+        errors.append("LLM_API_URL or LM_STUDIO_URL environment variable is required")
+    
+    # Validate REQUEST_TIMEOUT_SECONDS is a valid integer
+    try:
+        timeout = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "90"))
+        if timeout <= 0:
+            errors.append("REQUEST_TIMEOUT_SECONDS must be a positive integer")
+    except ValueError:
+        errors.append("REQUEST_TIMEOUT_SECONDS must be a valid integer")
+    
+    # Validate MAX_TOOL_STEPS is a valid integer
+    try:
+        max_steps = int(os.getenv("MAX_TOOL_STEPS", "6"))
+        if max_steps <= 0:
+            errors.append("MAX_TOOL_STEPS must be a positive integer")
+    except ValueError:
+        errors.append("MAX_TOOL_STEPS must be a valid integer")
+    
+    if errors:
+        error_msg = "\n".join([f"  - {e}" for e in errors])
+        raise RuntimeError(f"Configuration validation failed:\n{error_msg}")
+    
+    LOGGER.info("Configuration validation passed")
+
+
+# Validate config at module import time
+try:
+    _validate_config()
+except RuntimeError as e:
+    LOGGER.error(str(e))
+    raise
+
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-coder").strip()
 LLM_API_KEY = os.getenv("LLM_API_KEY", "local-no-key").strip()
 LLM_API_URL = (

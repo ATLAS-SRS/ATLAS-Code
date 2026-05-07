@@ -57,6 +57,7 @@ spec:
         - name: agent-guardian
           image: atlas/agent-guardian:latest
           imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "main_agent_guardian:app", "--host", "0.0.0.0", "--port", "8000"]
           env:
             - name: NAMESPACE
               value: "default"
@@ -79,7 +80,7 @@ spec:
             - name: LLM_API_URL
               value: "https://litellm-proxy-1013932759942.europe-west8.run.app"
             - name: LLM_MODEL
-              value: "gemini-2.5-pro" #"google/gemma-3-12b" or "local-model" # TODO: cambiare con il nome del modello LLM che si vuole utilizzare
+              value: "gemini-2.5-pro"
             - name: OPTIMIZE_CONTEXT
               value: "false"
             - name: LLM_API_KEY
@@ -93,13 +94,22 @@ spec:
               value: "http://host.docker.internal:1234/v1"
             - name: LMSTUDIO_MODEL
               value: "google/gemma-3-12b"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+          ports:
+            - name: webhook
+              containerPort: 8000
+              protocol: TCP
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 512Mi
             limits:
-              cpu: 250m
-              memory: 256Mi
+              cpu: 500m
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service
@@ -110,9 +120,116 @@ metadata:
     app: agent-guardian
 spec:
   selector:
-    app: agent-guardian # Deve corrispondere alle label del Deployment
+    app: agent-guardian
   ports:
     - protocol: TCP
-      port: 8000       # La porta su cui Kubernetes espone il servizio
-      targetPort: 8000 # La porta su cui è in ascolto il codice Python/FastAPI del tuo collega
+      name: webhook
+      port: 8000
+      targetPort: webhook
   type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atlas-guardian-dashboard
+  namespace: default
+  labels:
+    app: agent-guardian-dashboard
+    app.kubernetes.io/name: atlas-guardian-dashboard
+    app.kubernetes.io/part-of: atlas-guardian
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-guardian-dashboard
+  template:
+    metadata:
+      labels:
+        app: agent-guardian-dashboard
+        app.kubernetes.io/name: atlas-guardian-dashboard
+        app.kubernetes.io/part-of: atlas-guardian
+    spec:
+      containers:
+        - name: guardian-dashboard
+          image: atlas/agent-guardian:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - entrypoint.sh
+          env:
+            - name: LLM_API_URL
+              value: "https://litellm-proxy-1013932759942.europe-west8.run.app"
+            - name: PYTHONPATH
+              value: "/app"
+            - name: LLM_MODEL
+              value: "gemini-2.5-pro"
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: LLM_API_KEY
+            - name: LM_STUDIO_URL
+              value: "http://host.docker.internal:1234/v1"
+            - name: LMSTUDIO_BASE_URL
+              value: "http://host.docker.internal:1234/v1"
+            - name: LMSTUDIO_MODEL
+              value: "google/gemma-3-12b"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+            - name: HEALTH_CHECK_PORT
+              value: "8002"
+          ports:
+            - name: dashboard
+              containerPort: 8501
+              protocol: TCP
+            - name: health
+              containerPort: 8002
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-guardian-dashboard-service
+  namespace: default
+  labels:
+    app: agent-guardian-dashboard
+spec:
+  selector:
+    app: agent-guardian-dashboard
+  ports:
+    - protocol: TCP
+      name: dashboard
+      port: 8501
+      targetPort: dashboard
+    - protocol: TCP
+      name: health
+      port: 8002
+      targetPort: health
+  type: ClusterIP
+

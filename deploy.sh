@@ -17,6 +17,7 @@ APP_LAYER_DIR="${SCRIPT_DIR}/k8s/app-layer"
 DEFAULT_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-guardian.yaml"
 KIND_SCALING_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-guardian.yaml"
 SCALING_AGENT_MANIFEST="${DEFAULT_SCALING_AGENT_MANIFEST}"
+TREND_AGENT_MANIFEST="${APP_LAYER_DIR}/agent-trend-report.yaml"
 SERVICEMONITORS_MANIFEST="${APP_LAYER_DIR}/servicemonitors.yaml"
 CLUSTER_PROFILE="unknown"
 
@@ -163,6 +164,45 @@ ensure_llm_credentials_secret() {
   echo "Set it with: export LLM_API_KEY=<your-litellm-api-key>" >&2
   echo "Or create it manually: kubectl create secret generic llm-credentials -n ${NAMESPACE} --from-literal=LLM_API_KEY=<your-litellm-api-key>" >&2
   exit 1
+}
+
+ensure_postgres_credentials_secret() {
+  if kubectl get secret postgres-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+    log "Found existing postgres-credentials secret"
+    return 0
+  fi
+
+  # Wait for postgres secret to exist (it's created by the data-layer helm deployment)
+  local retry_count=0
+  local max_retries=30
+  while [[ $retry_count -lt $max_retries ]]; do
+    if kubectl get secret atlas-postgres-postgresql -n "$NAMESPACE" >/dev/null 2>&1; then
+      break
+    fi
+    log "Waiting for PostgreSQL secret to exist..."
+    sleep 5
+    ((retry_count++))
+  done
+
+  if ! kubectl get secret atlas-postgres-postgresql -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "ERROR: PostgreSQL secret atlas-postgres-postgresql not found in namespace ${NAMESPACE}." >&2
+    echo "Make sure the data layer has been deployed successfully." >&2
+    return 1
+  fi
+
+  log "Creating postgres-credentials secret from PostgreSQL deployment"
+  
+  # Extract postgres password from the existing secret
+  local postgres_password
+  postgres_password=$(kubectl get secret atlas-postgres-postgresql -n "$NAMESPACE" \
+    -o jsonpath='{.data.postgres-password}' | base64 -d 2>/dev/null || echo "postgres")
+  
+  local database_url="postgresql://postgres:${postgres_password}@atlas-postgres-postgresql.default.svc.cluster.local:5432/atlas_db"
+  
+  kubectl create secret generic postgres-credentials \
+    --namespace "$NAMESPACE" \
+    --from-literal=DATABASE_URL="$database_url" \
+    --dry-run=client -o yaml | kubectl apply -f -
 }
 
 service_monitor_crd_exists() {
@@ -323,6 +363,7 @@ deploy_app_layer() {
   log "Deploying app layer manifests"
 
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/config.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-configmap.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
@@ -342,9 +383,19 @@ deploy_app_layer() {
 
   if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
     ensure_llm_credentials_secret
+    ensure_postgres_credentials_secret
     log "Deploying agent-guardian"
     kubectl apply -n "$NAMESPACE" -f "$SCALING_AGENT_MANIFEST"
     rollout_or_debug deployment atlas-guardian-agent "app.kubernetes.io/name=atlas-guardian-agent"
+
+    # Deploy dashboard (trend-report) as a separate manifest if present
+    if [[ -f "$TREND_AGENT_MANIFEST" ]]; then
+      log "Deploying trend-report dashboard"
+      kubectl apply -n "$NAMESPACE" -f "$TREND_AGENT_MANIFEST"
+      rollout_or_debug deployment atlas-guardian-dashboard "app.kubernetes.io/name=atlas-guardian-dashboard"
+    else
+      log "Trend-report manifest not found at ${TREND_AGENT_MANIFEST}; skipping dashboard deployment"
+    fi
   else
     log "agent-guardian manifest not found at ${SCALING_AGENT_MANIFEST}, skipping"
   fi
@@ -576,11 +627,13 @@ Quick checks:
   kubectl logs -n ${NAMESPACE} deploy/scoring-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/notification-system --tail=100
   kubectl logs -n ${NAMESPACE} deploy/atlas-guardian-agent --tail=100
+  kubectl logs -n ${NAMESPACE} deploy/atlas-guardian-dashboard --tail=100
   kubectl logs -n ${NAMESPACE} deploy/atlas-chaos-agent --tail=100
 
 Endpoints (tramite NGINX Ingress & nip.io):
   API Gateway:   http://fraud-api.127.0.0.1.nip.io
   Locust UI:     http://locust.127.0.0.1.nip.io
+  Guardian UI:   http://guardian-report.127.0.0.1.nip.io
   Grafana UI:    http://grafana.127.0.0.1.nip.io
   Prometheus:    http://prometheus.127.0.0.1.nip.io
 
