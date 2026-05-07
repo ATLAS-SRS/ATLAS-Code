@@ -304,7 +304,7 @@ class SREGuardianRuntime:
             grafana_allowed = {
                 name
                 for name in tool_registry.names()
-                if name in {"query_prometheus", "query_loki_logs", "list_datasources", "get_deployment_resources"}
+                if name in {"query_prometheus", "query_loki_logs", "list_datasources", "get_deployment_resources", "get_workload_health"}
             }
 
             if not grafana_allowed:
@@ -363,7 +363,8 @@ class SREGuardianRuntime:
                         "get_budget_state",
                         "plan_budget_allocation",
                         "execute_budget_allocation",
-                        "restore_cpu_limits"
+                        "restore_cpu_limits",
+                        "get_workload_health",
                     }
                 }
             else:

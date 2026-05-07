@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
 import sys
+import re
+import datetime
 from typing import Any
 from kubernetes import client, config
 from mcp.server.fastmcp import FastMCP
@@ -504,44 +506,59 @@ def set_hpa_max_replicas(deployment: str, max_replicas: int) -> dict[str, Any]:
 @mcp.tool()
 def get_deployment_resources(deployment: str, namespace: str = "default") -> str:
     """Restituisce i limiti e le richieste di CPU e RAM attuali per un deployment."""
+    clean_name = re.sub(r'-[0-9]+$', '', deployment)
     try:
-        # Se usi l'esecuzione in-cluster, config.load_incluster_config()
-        # Se sei fuori, config.load_kube_config()
         apps_v1 = client.AppsV1Api()
+        try:
+            workload = apps_v1.read_namespaced_deployment(name=clean_name, namespace=namespace)
+            w_type = "Deployment"
+        except ApiException as e:
+            if e.status == 404:
+                workload = apps_v1.read_namespaced_stateful_set(name=clean_name, namespace=namespace)
+                w_type = "StatefulSet"
+            else:
+                raise e
         
-        dep = apps_v1.read_namespaced_deployment(name=deployment, namespace=namespace)
-        containers = dep.spec.template.spec.containers
-        
-        report = []
+        containers = workload.spec.template.spec.containers
+        report = [f"Tipo: {w_type}"]
         for c in containers:
             resources = c.resources
             limits = resources.limits if resources.limits else "Non impostati"
             requests = resources.requests if resources.requests else "Non impostati"
             report.append(f"Container '{c.name}': Limits {limits}, Requests {requests}")
-            
         return " | ".join(report)
-        
     except ApiException as e:
+        if e.status == 404:
+            return f"Nessun Deployment o StatefulSet trovato con il nome '{clean_name}'"
         return f"Errore nell'accesso alle API K8s: {e.reason} ({e.status})"
     except Exception as e:
         return f"Errore interno del tool: {str(e)}"
 
 @mcp.tool()
 def restore_cpu_limits(deployment: str) -> dict[str, Any]:
-    """Restore the CPU limits of a deployment to normal healthy values (requests: 50m, limits: 250m) to mitigate CPU starvation/throttling."""
+    """Restore the CPU limits of a deployment or statefulset to normal healthy values (requests: 50m, limits: 250m) to mitigate CPU starvation/throttling."""
     deployment = (deployment or "").strip()
     if not deployment:
         return _error_response("Parameter 'deployment' is required")
 
+    clean_name = re.sub(r'-[0-9]+$', '', deployment)
+    w_type = "Deployment"
+
     try:
-        # Usa il client globale apps_api invece della funzione inesistente
-        dep = apps_api.read_namespaced_deployment(name=deployment, namespace=NAMESPACE)
+        try:
+            workload = apps_api.read_namespaced_deployment(name=clean_name, namespace=NAMESPACE)
+            w_type = "Deployment"
+        except ApiException as e:
+            if e.status == 404:
+                workload = apps_api.read_namespaced_stateful_set(name=clean_name, namespace=NAMESPACE)
+                w_type = "StatefulSet"
+            else:
+                raise e
 
-        containers = dep.spec.template.spec.containers if dep.spec and dep.spec.template and dep.spec.template.spec else []
+        containers = workload.spec.template.spec.containers if workload.spec and workload.spec.template and workload.spec.template.spec else []
         if not containers:
-            return _error_response("Deployment has no containers to patch", data={"deployment": deployment})
+            return _error_response(f"{w_type} has no containers to patch", data={"deployment": clean_name})
 
-        # Impostiamo limiti di default sicuri per ripristinare il servizio
         safe_requests = "50m"
         safe_limits = "250m"
 
@@ -564,17 +581,24 @@ def restore_cpu_limits(deployment: str) -> dict[str, Any]:
             }
         }
 
-        # Usa il client globale apps_api anche qui
-        apps_api.patch_namespaced_deployment(
-            name=deployment,
-            namespace=NAMESPACE,
-            body=patch_body,
-        )
+        if w_type == "Deployment":
+            apps_api.patch_namespaced_deployment(
+                name=clean_name,
+                namespace=NAMESPACE,
+                body=patch_body,
+            )
+        else:
+            apps_api.patch_namespaced_stateful_set(
+                name=clean_name,
+                namespace=NAMESPACE,
+                body=patch_body,
+            )
 
         LOGGER.info(
-            "Restored deployment CPU limits to healthy defaults",
+            f"Restored {w_type} CPU limits to healthy defaults",
             extra={
-                "deployment": deployment,
+                "deployment": clean_name,
+                "type": w_type,
                 "namespace": NAMESPACE,
                 "requests": safe_requests,
                 "limits": safe_limits
@@ -582,17 +606,85 @@ def restore_cpu_limits(deployment: str) -> dict[str, Any]:
         )
         return _success_response(
             {
-                "deployment": deployment,
+                "deployment": clean_name,
+                "type": w_type,
                 "status": "restored",
                 "cpu_requests": safe_requests,
                 "cpu_limits": safe_limits
             },
-            msg="CPU limits restored successfully"
+            msg=f"CPU limits restored successfully for {w_type} '{clean_name}'"
         )
     except ApiException as exc:
-        return _error_response(f"Kubernetes API error: {exc.reason}", data={"deployment": deployment})
+        if exc.status == 404:
+            return _error_response(f"No Deployment or StatefulSet found with name '{clean_name}'", data={"deployment": deployment})
+        return _error_response(f"Kubernetes API error: {exc.reason} ({exc.status})", data={"deployment": deployment})
     except Exception as exc:
         return _error_response(str(exc), data={"deployment": deployment})
+
+@mcp.tool()
+def get_workload_health(workload_query: str) -> str:
+    """Cerca workload per nome parziale o esatto e restituisce lo stato di salute dei relativi Pod (fase, età, readiness, riavvii)."""
+    query = (workload_query or "").strip().lower()
+    
+    try:
+        core_api = client.CoreV1Api()
+        apps_api = client.AppsV1Api()
+        
+        matched_workloads = []
+        
+        # 1. Recupera TUTTI i Deployment e StatefulSet
+        deployments = apps_api.list_namespaced_deployment(namespace=NAMESPACE)
+        for d in deployments.items:
+            if query in d.metadata.name.lower():
+                matched_workloads.append((d.metadata.name, "Deployment", d.spec.selector.match_labels))
+                
+        statefulsets = apps_api.list_namespaced_stateful_set(namespace=NAMESPACE)
+        for s in statefulsets.items:
+            if query in s.metadata.name.lower():
+                matched_workloads.append((s.metadata.name, "StatefulSet", s.spec.selector.match_labels))
+
+        if not matched_workloads:
+            return f"Nessun workload trovato corrispondente alla query '{query}'."
+
+        report = []
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # 2. Per ogni match, interroga i Pod usando i label selector
+        for name, w_type, labels_dict in matched_workloads:
+            if not labels_dict:
+                continue
+                
+            label_selector = ",".join([f"{k}={v}" for k, v in labels_dict.items()])
+            pods = core_api.list_namespaced_pod(namespace=NAMESPACE, label_selector=label_selector)
+            
+            report.append(f"\n--- Stato per {w_type}: {name} ---")
+            if not pods.items:
+                report.append("Nessun Pod attivo trovato (possibile scale a 0).")
+                continue
+                
+            for p in pods.items:
+                p_name = p.metadata.name
+                phase = p.status.phase
+                age_mins = int((now - p.metadata.creation_timestamp).total_seconds() / 60)
+                
+                ready_count = sum(1 for c in (p.status.container_statuses or []) if c.ready)
+                total_count = len(p.spec.containers)
+                restarts = sum(c.restart_count for c in (p.status.container_statuses or []))
+                
+                status_details = ""
+                for c in (p.status.container_statuses or []):
+                    if c.state.waiting:
+                        status_details += f"[{c.name} waiting: {c.state.waiting.reason}] "
+                
+                report.append(
+                    f"- Pod: {p_name} | Fase: {phase} | Età: {age_mins}m | "
+                    f"Pronto: {ready_count}/{total_count} | Riavvii: {restarts} | {status_details.strip()}"
+                )
+                
+        return "\n".join(report)
+
+    except Exception as exc:
+        return f"Errore API K8s durante la ricerca: {str(exc)}"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

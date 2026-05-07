@@ -19,42 +19,150 @@ kafka_connected: bool = False
 connection_task: asyncio.Task = None
 logger = get_logger("gateway")
 
+# Exponential backoff configuration for Kafka connection retries
+MIN_RETRY_DELAY = 2  # Initial delay in seconds
+MAX_RETRY_DELAY = 32  # Maximum delay in seconds (caps exponential growth)
+
 async def _kafka_connection_task():
+    """
+    Background task to establish Kafka connection with exponential backoff.
+    Never raises exceptions - the application continues running regardless.
+    Kubernetes liveness probe will see the HTTP server running and won't restart.
+    Kubernetes readiness probe will hold traffic until Kafka is connected.
+    """
     global kafka_connected
+    retry_attempt = 0
+    retry_delay = MIN_RETRY_DELAY
+    
     try:
         while not kafka_connected:
+            retry_attempt += 1
             try:
+                logger.info(
+                    "Attempting to connect to Kafka broker",
+                    extra={
+                        "kafka_broker": KAFKA_BROKER,
+                        "attempt": retry_attempt,
+                        "phase": "kafka_connection",
+                    },
+                )
+                
                 await producer.start()
                 kafka_connected = True
-                logger.info("Kafka connection established in background")
+                
+                logger.info(
+                    "Successfully connected to Kafka broker",
+                    extra={
+                        "kafka_broker": KAFKA_BROKER,
+                        "total_attempts": retry_attempt,
+                        "phase": "kafka_connection",
+                    },
+                )
                 break
+                
             except Exception as e:
                 logger.warning(
-                    "Unable to connect to Kafka. Retrying in 5 seconds",
-                    extra={"error": str(e), "retry_in_seconds": 5},
+                    "Waiting for Kafka to become available",
+                    extra={
+                        "kafka_broker": KAFKA_BROKER,
+                        "attempt": retry_attempt,
+                        "retry_delay_seconds": retry_delay,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "phase": "kafka_connection",
+                    },
                 )
-                await asyncio.sleep(5)
+                
+                await asyncio.sleep(retry_delay)
+                
+                # Exponential backoff: 2s → 4s → 8s → 16s → 32s → 32s → ...
+                retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
+                
     except asyncio.CancelledError:
-        logger.warning("Kafka connection task cancelled during shutdown")
+        logger.warning(
+            "Kafka connection task cancelled during shutdown",
+            extra={"phase": "kafka_connection", "attempt": retry_attempt},
+        )
 
 # --- 2. CICLO DI VITA DELL'APP (Startup e Shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Eseguito all'avvio: connettiamo il producer a Kafka
-    global producer
+    """
+    Application lifespan handler implementing graceful degradation pattern.
+    
+    STARTUP:
+    - HTTP server starts immediately (does not wait for Kafka)
+    - Kafka connection attempt happens in background with exponential backoff
+    - Liveness probe responds 200 OK immediately
+    - Readiness probe responds 503 until Kafka is ready
+    
+    SHUTDOWN:
+    - Gracefully cancels background Kafka connection task
+    - Closes Kafka producer if connected
+    """
+    global producer, connection_task
+    
+    logger.info(
+        "API Gateway starting up",
+        extra={
+            "kafka_broker": KAFKA_BROKER,
+            "phase": "startup",
+            "startup_phase": "initialization",
+        },
+    )
+    
+    # Create Kafka producer (does not connect yet, just initializes the object)
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BROKER)
+    
+    # Spawn background task to establish Kafka connection with retries
     connection_task = asyncio.create_task(_kafka_connection_task())
-    yield
-    # Spegnimento
+    
+    logger.info(
+        "HTTP server ready to accept requests",
+        extra={
+            "phase": "startup",
+            "startup_phase": "http_ready",
+            "kafka_status": "connecting_in_background",
+        },
+    )
+    
+    yield  # Application is now running
+    
+    # --- SHUTDOWN PHASE ---
+    logger.info(
+        "API Gateway shutting down",
+        extra={"phase": "shutdown", "shutdown_phase": "initiated"},
+    )
+    
+    # Cancel background Kafka connection task
     if connection_task and not connection_task.done():
         connection_task.cancel()
         try:
             await connection_task
         except asyncio.CancelledError:
-            pass
+            logger.info(
+                "Kafka connection task cancelled during shutdown",
+                extra={"phase": "shutdown", "shutdown_phase": "task_cancelled"},
+            )
+    
+    # Close Kafka producer if it was successfully connected
     if kafka_connected:
-        await producer.stop()
-        logger.info("Kafka connection closed")
+        try:
+            await producer.stop()
+            logger.info(
+                "Kafka connection closed",
+                extra={"phase": "shutdown", "shutdown_phase": "kafka_closed"},
+            )
+        except Exception as e:
+            logger.error(
+                "Error closing Kafka connection",
+                extra={"phase": "shutdown", "error": str(e)},
+            )
+    
+    logger.info(
+        "API Gateway shutdown complete",
+        extra={"phase": "shutdown", "shutdown_phase": "complete"},
+    )
 
 # --- 3. CONFIGURAZIONE RATE LIMITER ---
 # Usa l'IP del client per limitare le richieste (es. max 10 al minuto per IP)
@@ -125,39 +233,86 @@ async def ingest_transaction(request: Request, transaction: Transaction):
 @app.get("/health/live", status_code=status.HTTP_200_OK)
 async def liveness_probe():
     """
-    Liveness probe: leggerissima per dimostrare che l'event loop di FastAPI 
-    è in esecuzione e non è bloccato.
+    Kubernetes Liveness Probe endpoint.
+    
+    Returns 200 OK if the HTTP event loop is running and responsive.
+    Does NOT check Kafka connectivity.
+    
+    Purpose: Prevents K8s from restarting the pod while waiting for Kafka.
+    Failure behavior: Restart pod (only if HTTP server is actually hung/dead).
     """
-    return {"status": "alive"}
+    return {"status": "alive", "phase": "liveness_check"}
+
 
 @app.get("/health/ready", status_code=status.HTTP_200_OK)
 async def readiness_probe():
     """
-    Readiness probe: verifica che il Gateway possa effettivamente 
-    comunicare con Kafka prima di accettare traffico.
+    Kubernetes Readiness Probe endpoint.
+    
+    Returns 200 OK ONLY if:
+    1. HTTP server is running (implied by reaching this endpoint)
+    2. Kafka producer is initialized
+    3. Kafka broker connection is established and healthy
+    
+    Returns 503 Service Unavailable otherwise.
+    
+    Purpose: Routes traffic only to pods ready to process transactions.
+    Failure behavior: Remove pod from load balancer; do NOT restart.
     """
+    # Check if Kafka has successfully connected
     if not kafka_connected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="La connessione a Kafka non è ancora stata stabilita."
+        logger.warning(
+            "Readiness check failed: Kafka not yet connected",
+            extra={"phase": "readiness_check", "kafka_status": "not_connected"},
         )
-    if producer is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Il producer Kafka non è ancora inizializzato."
+            detail="Kafka connection not yet established. Waiting for broker to become available.",
+        )
+    
+    # Check if producer object exists (should always be true if kafka_connected is true)
+    if producer is None:
+        logger.error(
+            "Readiness check failed: Producer not initialized",
+            extra={"phase": "readiness_check"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Kafka producer not initialized.",
         )
 
     try:
-        # Richiede l'aggiornamento dei metadati del cluster Kafka con un timeout di 2 secondi
-        await asyncio.wait_for(producer.client.force_metadata_update(), timeout=2.0)
-        return {"status": "ready"}
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Timeout durante la connessione al cluster Kafka."
+        # Verify broker connectivity and metadata availability
+        await asyncio.wait_for(
+            producer.client.force_metadata_update(), 
+            timeout=2.0
         )
-    except Exception as e:
+        logger.debug(
+            "Readiness check passed: Kafka is healthy",
+            extra={"phase": "readiness_check", "kafka_status": "healthy"},
+        )
+        return {"status": "ready", "phase": "readiness_check", "kafka_status": "connected"}
+        
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Readiness check failed: Kafka metadata timeout",
+            extra={"phase": "readiness_check", "timeout_seconds": 2.0},
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Errore durante il controllo di readiness di Kafka: {e}"
+            detail="Timeout contacting Kafka cluster. Broker may be unhealthy or overloaded.",
+        )
+        
+    except Exception as e:
+        logger.error(
+            "Readiness check failed: Unexpected error during Kafka verification",
+            extra={
+                "phase": "readiness_check",
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Kafka readiness verification failed: {type(e).__name__}",
         )

@@ -11,11 +11,14 @@ metadata:
   namespace: default
 rules:
   - apiGroups: ["apps"]
-    resources: ["deployments", "deployments/scale", "deployments/status"]
+    resources: ["deployments", "deployments/scale", "deployments/status", "statefulsets", "statefulsets/scale", "statefulsets/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -53,6 +56,10 @@ spec:
         app.kubernetes.io/part-of: atlas-guardian
     spec:
       serviceAccountName: atlas-guardian-sa
+      initContainers:
+        - name: wait-for-grafana-mcp
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z grafana-mcp-service.default.svc.cluster.local 80; do echo "Waiting for grafana-mcp..."; sleep 3; done']
       containers:
         - name: agent-guardian
           image: atlas/agent-guardian:latest
@@ -61,13 +68,15 @@ spec:
             - name: NAMESPACE
               value: "default"
             - name: TARGET_DEPLOYMENTS
-              value: "api-gateway,scoring-system,enrichment-system,notification-system"
+              value: "api-gateway,scoring-system,enrichment-system,notification-system,atlas-monitoring-grafana,atlas-kafka-broker,atlas-kafka-controller,atlas-postgres-postgresql,atlas-redis-master"
             - name: BUDGET_MAX_REPLICAS
               value: "2"
             - name: EMERGENCY_MAX_REPLICAS
               value: "5"
             - name: TOTAL_REPLICA_BUDGET
               value: "8"
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: "300"
             - name: DEPLOYMENT_MIN_REPLICAS
               value: "api-gateway=1,scoring-system=1,enrichment-system=1,notification-system=1"
             - name: DEPLOYMENT_POD_COSTS
