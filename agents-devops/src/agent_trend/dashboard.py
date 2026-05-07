@@ -130,6 +130,41 @@ def display_key_value_grid(values: dict[str, Any]) -> None:
         columns[index % 3].metric(label, "-" if value in (None, "") else str(value))
 
 
+def format_action_dict(action: Any) -> str:
+    """Format an action dict into readable text."""
+    if isinstance(action, dict):
+        action_type = action.get("action", "UNKNOWN")
+        return str(action_type)
+    return str(action) if action else "UNKNOWN"
+
+
+def render_action_details(action: Any) -> None:
+    """Render action details in a readable format."""
+    if not action or action in (None, ""):
+        st.write("No action details")
+        return
+    
+    if isinstance(action, dict):
+        # Display key action fields
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Action Type**: `{action.get('action', 'UNKNOWN')}`")
+        with col2:
+            st.markdown(f"**Outcome**: {action.get('outcome', 'N/A')}")
+        
+        # Display rationale if present
+        if action.get("rationale"):
+            st.markdown("**Rationale**:")
+            st.write(action["rationale"])
+        
+        # Display follow-up if present
+        if action.get("follow_up"):
+            st.markdown("**Follow-up**:")
+            st.warning(action["follow_up"])
+    else:
+        st.write(str(action))
+
+
 def render_incident(incident: dict[str, Any]) -> None:
     alert_context = incident.get("alert_context") or {}
     investigation = incident.get("investigation") or {}
@@ -170,11 +205,17 @@ def render_incident(incident: dict[str, Any]) -> None:
         {
             "Verdict": investigation.get("verdict", "UNKNOWN"),
             "Confidence": investigation.get("confidence", "-"),
-            "Next Step": investigation.get("recommended_next_step", "-"),
         }
     )
+    
+    # Display recommended next step as full-width text instead of in metric grid
+    next_step = investigation.get("recommended_next_step", "")
+    if next_step:
+        st.info(f"**Next Step**: {next_step}")
+    
     evidence = investigation.get("evidence") or []
     if evidence:
+        st.markdown("**Evidence**:")
         for item in evidence:
             st.write(f"- {item}")
     else:
@@ -183,21 +224,21 @@ def render_incident(incident: dict[str, Any]) -> None:
     st.subheader("Execution Details")
     display_key_value_grid(
         {
-            "Action": execution.get("action", "UNKNOWN"),
+            "Action": format_action_dict(execution.get("action")),
             "Deployment": execution.get("deployment", "-"),
             "Human Approval": execution.get("human_approval", "-"),
         }
     )
+    
+    # Render detailed action information
+    if execution.get("action"):
+        st.markdown("**Action Details**:")
+        render_action_details(execution.get("action"))
+    
     if execution.get("replicas"):
         st.json(execution["replicas"], expanded=True)
-    if execution.get("rationale"):
-        st.write(execution["rationale"])
     if execution.get("executed_tools"):
         st.write("Executed tools: " + ", ".join(map(str, execution["executed_tools"])))
-    if execution.get("outcome"):
-        st.success(execution["outcome"])
-    if execution.get("follow_up"):
-        st.warning(execution["follow_up"])
 
     st.subheader("Final Summary")
     st.markdown(str(incident.get("final_summary") or "No final summary captured."))
