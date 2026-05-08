@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
 limiter = Limiter(key_func=get_remote_address)
 
 # Inizializziamo FastAPI
-app = FastAPI(title="Banca Aemilia - API Gateway", lifespan=lifespan)
+app = FastAPI(title="ATLAS - API Gateway", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

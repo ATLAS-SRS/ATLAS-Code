@@ -1,29 +1,29 @@
-# ATLAS Orchestrator
+# ATLAS Scaling Agent
 
-The `agents-orchestrator/` directory contains the current ATLAS scaling runtime:
-- `mcp_client.py`: LangGraph-driven Kubernetes orchestrator (single-loop, multi-deployment)
-- `mcp_server.py`: local MCP server exposing Prometheus/Kubernetes tools over stdio
+The `agents-devops/` directory contains the ATLAS Guardian runtime for alert intake, scaling orchestration, and operational remediation:
+- `main_agent_guardian.py`: FastAPI webhook for alert intake and remediation orchestration
+- `k8s_mcp.py`: MCP tool server exposing Prometheus and Kubernetes operations over stdio
 
 ## Overview
 
-### Kubernetes Central Orchestrator (`mcp_client.py`)
+### Kubernetes Central Orchestrator (`main_agent_guardian.py`)
 
-This runtime implements a feed-forward autoscaling model for the full fraud pipeline:
-- Reads global ingress load from API Gateway once per cycle using Prometheus RPS
-- Exposes internal MCP tools (`get_rps`, `get_current_replicas`, `set_replicas`) with strict typing and descriptive docstrings
-- Exposes internal MCP tools (`get_rps`, `get_current_replicas`, `set_replicas`, `get_scaling_recommendation`) with strict typing and descriptive docstrings
-- Uses LangGraph to model the per-deployment reasoning loop as explicit states and transitions
-- Uses OpenAI-compatible tool-calling (LM Studio / Ollama OpenAI API) to run an autonomous ReAct loop per deployment
-- Iterates deployments sequentially (`TARGET_DEPLOYMENTS`) in a single loop
-- Executes tool calls until the assistant returns a final answer without additional tool calls
-- Applies replica updates with Kubernetes Deployment scale API with hard guardrails (`MIN_REPLICAS`, `MAX_REPLICAS`)
+This runtime accepts Alertmanager webhooks and executes a reasoning loop for remediation:
+- Receives firing alerts via FastAPI webhook on port 8000
+- Reads global system state from Prometheus via MCP tool calls
+- Exposes MCP tools (`get_rps`, `get_current_replicas`, `set_replicas`, `get_scaling_recommendation`, `get_workload_health`, and budget-aware tools) with strict typing
+- Uses LangGraph to model the alert remediation workflow as explicit states and transitions
+- Uses OpenAI-compatible tool-calling to run an autonomous ReAct loop for each alert
+- Applies scaling and remediation actions with Kubernetes Deployment scale API
+- Enforces a global replica budget so scaling actions never exceed `TOTAL_REPLICA_BUDGET`
+- Deduplicates alerts with `ALERT_DEDUP_WINDOW_SECONDS` (default 60s) and serializes concurrent runs per deployment
 
 Default target list:
 - `api-gateway,scoring-system,enrichment-system,notification-system`
 
-### Local MCP Tool Server (`mcp_server.py`)
+### Local MCP Tool Server (`k8s_mcp.py`)
 
-The tool server exposes the Prometheus and Kubernetes operations used by the orchestrator. It is started locally by `mcp_client.py` over stdio.
+The tool server exposes Prometheus and Kubernetes operations used by the Guardian workflow. It is started locally by `main_agent_guardian.py` over stdio.
 
 ## Features
 
@@ -31,9 +31,11 @@ The tool server exposes the Prometheus and Kubernetes operations used by the orc
 - **Kubernetes Orchestration**: Native Deployment scale operations for app-layer services
 - **Real-time Monitoring**: Prometheus-backed load observations
 - **Safety Boundaries**: Hard guardrails enforced at tool level (`MIN_REPLICAS`, `MAX_REPLICAS`)
+- **Replica Budget**: Global scaling actions are blocked when the projected total replica usage exceeds `TOTAL_REPLICA_BUDGET`
 - **MCP Integration**: `mcp_client.py` uses MCP-defined tools for autonomous execution; `mcp_server.py` exposes the local tool surface in `stdio` mode
 - **Operational Safety**: Human-in-the-loop and auditable scaling actions
 - **LM Studio Support**: Optional local LLM reasoning with deterministic fallback paths
+- **Budget Allocation Tools**: The runtime also exposes `get_hpa_limits`, `get_budget_state`, `plan_budget_allocation`, `execute_budget_allocation`, `set_hpa_max_replicas`, `restore_cpu_limits`, and `get_workload_health`
 
 ## Architecture
 
@@ -47,16 +49,19 @@ The tool server exposes the Prometheus and Kubernetes operations used by the orc
          └────────── System Metrics ──────────────┼────────────┘
 ```
 
-## Kubernetes Central Loop Logic (`mcp_client.py`)
+## Guardian Agent Loop Logic (`main_agent_guardian.py`)
 
-1. Parse `TARGET_DEPLOYMENTS` into the allowed deployment set.
-2. Build an OpenAI-compatible client pointing to `LLM_API_URL`.
-3. Load the MCP tools and convert them into OpenAI tool schemas.
-4. Build a LangGraph state machine for a single deployment cycle.
-5. For each deployment in order, invoke the graph with the system prompt and user prompt.
-6. While the model emits `tool_calls`, execute the matching local tool and append the result as a tool message.
-7. When the model stops requesting tools or the step budget is exhausted, record the final operational report.
-8. Sleep 2 seconds between per-deployment iterations and `CHECK_INTERVAL` after a full pass.
+1. Accept Alertmanager webhook POST with firing alerts
+2. Parse alert payload and extract deployment/severity context
+3. Check `ALERT_DEDUP_WINDOW_SECONDS` to skip duplicate alerts
+4. Acquire per-deployment lock to serialize concurrent alert handling
+5. Build an OpenAI-compatible client pointing to `LLM_API_URL`
+6. Load the MCP tools and convert them into OpenAI tool schemas
+7. Build a LangGraph state machine for alert remediation
+8. Invoke the graph with the alert context and system prompt
+9. While the model emits `tool_calls`, execute the matching local tool and append the result
+10. When the model stops requesting tools or step budget exhausted, record the incident report
+11. Upsert incident reports by `incident_id` and store `post_mortem_path` for dashboard access
 
 Default RPS query:
 - `sum(rate(http_requests_total{job="api-gateway"}[1m]))`
@@ -72,12 +77,12 @@ The local tool server exposes the following MCP tools:
 
 ## Usage
 
-### Kubernetes Central Orchestrator
+### Guardian Agent Runtime
 
 This is the runtime used by the Kubernetes manifest (`k8s/app-layer/agent-guardian.yaml`):
 
 ```bash
-python -u mcp_client.py
+python -u main_agent_guardian.py
 ```
 
 Main environment variables:
@@ -87,6 +92,8 @@ Main environment variables:
 - `PROMQL_RPS_QUERY`
 - `CHECK_INTERVAL`
 - `MIN_REPLICAS` / `MAX_REPLICAS`
+- `BUDGET_MAX_REPLICAS`: per-deployment ceiling used to derive the default global budget
+- `TOTAL_REPLICA_BUDGET`: maximum allowed replica sum across all target deployments
 - `LLM_API_URL` / `LM_STUDIO_URL` / `LLM_MODEL` / `LMSTUDIO_MODEL`
 - `GRAFANA_MCP_URL`
 - `MAX_TOOL_STEPS`
@@ -121,17 +128,19 @@ docker compose run --rm --entrypoint pytest agent-guardian -o cache_dir=/tmp/pyt
 - `MAX_TOOL_STEPS`: hard cap for the autonomous tool loop in a single deployment cycle
 - `AGENT_IDLE_RPS_HINT`: low-traffic hint used to trigger an additional agent reconsideration pass when a deployment remains at `MAX_REPLICAS` (default `0.05`)
 - `RPS_REPLICA_THRESHOLDS`: 4 ascending comma-separated RPS thresholds used to map traffic into a 1..5 target replica band (default `5,15,30,60`)
+- `BUDGET_MAX_REPLICAS`: per-deployment ceiling used to derive the default global budget
+- `TOTAL_REPLICA_BUDGET`: maximum allowed replica sum across all target deployments
+- `EMERGENCY_MAX_REPLICAS`: absolute upper bound for emergency actions, clamped to the configured budget
 
-### `mcp_server.py` (Local MCP Tool Server)
+### `k8s_mcp.py` (MCP Tool Server)
 - `PROMETHEUS_URL`: Prometheus server URL (default: http://localhost:9090)
 - `NAMESPACE`: Kubernetes namespace used by the tool server
 - `TARGET_DEPLOYMENTS`: comma-separated deployment names that can be evaluated
 - `PROMQL_RPS_QUERY`: global ingress RPS query (default targets `api-gateway`)
 - `MIN_REPLICAS` / `MAX_REPLICAS`: scaling guardrails enforced by tool validation
-- `RPS_REPLICA_THRESHOLDS`: 4 ascending comma-separated RPS thresholds used to map traffic into a 1..5 target replica band
-
-Scaling thresholds can be modified at runtime via the HTTP/MCP interfaces or via environment variables at startup.
-
+- `BUDGET_MAX_REPLICAS`: per-deployment ceiling used to derive the default global budget
+- `TOTAL_REPLICA_BUDGET`: maximum allowed replica sum across all target deployments
+- `EMERGENCY_MAX_REPLICAS`: absolute upper bound for emergency actions
 ## LM Studio Integration
 
 Recommended runtime shape:
@@ -140,25 +149,7 @@ Recommended runtime shape:
 2. Point `LLM_API_URL` or `LM_STUDIO_URL` to the LM Studio server, for example `http://host.docker.internal:1234/v1`.
 3. Set `LLM_MODEL` or `LMSTUDIO_MODEL` to the exact model identifier exposed by LM Studio.
 
-If the model times out, returns invalid JSON, or proposes an unsafe action, the orchestrator falls back to HOLD for safety.
-
-## Integration with ATLAS
-
-The scaling orchestrator integrates with the broader ATLAS system:
-
-1. **Metrics Collection**: Pulls metrics from Prometheus
-2. **Decision Making**: Analyzes load patterns and business requirements
-3. **Safe Scaling**: Uses Docker Compose scaling with guardrails and cooldowns
-4. **Operational Feedback**: Logs all scaling actions for audit trails
-
-## Return on Agent (ROA) Analysis
-
-The scaling orchestrator provides measurable value:
-
-- **Cost Reduction**: Automatic scaling prevents over-provisioning
-- **Performance**: Maintains SLIs during traffic spikes
-- **Reliability**: Reduces manual intervention and human error
-- **Efficiency**: Optimizes resource utilization
+If the model times out, returns invalid JSON, or proposes an unsafe action, the Guardian falls back to a safe default.
 
 ## Safety and Compliance
 
