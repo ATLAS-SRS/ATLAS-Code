@@ -363,7 +363,6 @@ deploy_app_layer() {
   log "Deploying app layer manifests"
 
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/config.yaml"
-  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-configmap.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
@@ -597,11 +596,27 @@ deploy_locust() {
   log "Deploying Locust manifests"
 
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-configmap.yaml"
-  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/deployments.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/locust-deployments.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   if [[ -f "${APP_LAYER_DIR}/ingress.yaml" ]]; then
     kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
   fi
+
+  local ingress_controller_ip=""
+  ingress_controller_ip=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.clusterIP}')
+  if [[ -z "$ingress_controller_ip" ]]; then
+    echo "ERROR: unable to resolve the ClusterIP for ingress-nginx-controller in namespace ingress-nginx" >&2
+    exit 1
+  fi
+
+  local host_aliases_patch
+  host_aliases_patch=$(printf '[{"op":"add","path":"/spec/template/spec/hostAliases","value":[{"ip":"%s","hostnames":["fraud-api.127.0.0.1.nip.io"]}]}]' "$ingress_controller_ip")
+
+  for deployment_name in locust-master locust-worker; do
+    kubectl patch deployment "$deployment_name" -n "$NAMESPACE" --type='json' \
+      -p='[{"op":"remove","path":"/spec/template/spec/hostAliases"}]' >/dev/null 2>&1 || true
+    kubectl patch deployment "$deployment_name" -n "$NAMESPACE" --type='json' -p="$host_aliases_patch"
+  done
 
   log "Waiting for Locust rollouts"
   kubectl rollout status deploy/locust-master -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"

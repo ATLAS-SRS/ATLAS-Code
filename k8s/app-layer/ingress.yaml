@@ -21,6 +21,20 @@ spec:
                 name: api-gateway
                 port:
                   number: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: locust-ui-ingress
+  labels:
+    app.kubernetes.io/name: locust-master-ui
+    app.kubernetes.io/part-of: fraud-detection
+    app.kubernetes.io/component: compute-layer
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+spec:
+  ingressClassName: nginx
+  rules:
     - host: locust.127.0.0.1.nip.io
       http:
         paths:
