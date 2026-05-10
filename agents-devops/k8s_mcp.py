@@ -10,12 +10,12 @@ from structured_logger import get_logger
 from src.agent_guardian.budgeting import compute_budget_plan, parse_keyed_ints
 from kubernetes.client.rest import ApiException
 
-# Configurazione e Logging
+# Configuration and Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOGGER = get_logger("k8s-mcp-server", stream=sys.stderr)
 LOGGER.setLevel(LOG_LEVEL)
 
-# Guardrail Operativi (Hardcoded Environment Variables)
+# Operational Guardrails (Hardcoded Environment Variables)
 NAMESPACE = os.getenv("NAMESPACE", "default").strip()
 TARGET_DEPLOYMENTS = set(
     item.strip() for item in os.getenv(
@@ -70,16 +70,16 @@ for deployment in TARGET_DEPLOYMENTS:
     if DEPLOYMENT_POD_COSTS.get(deployment, 0) <= 0:
         DEPLOYMENT_POD_COSTS[deployment] = 1
 
-# Inizializzazione Kubernetes
+# Kubernetes initialization
 try:
     config.load_incluster_config()
-    LOGGER.info("Caricata configurazione K8s in-cluster")
+    LOGGER.info("Loaded in-cluster K8s configuration")
 except Exception:
     try:
         config.load_kube_config()
-        LOGGER.info("Caricata configurazione K8s locale (fallback)")
+        LOGGER.info("Loaded local K8s configuration (fallback)")
     except Exception as e:
-        LOGGER.critical(f"Impossibile caricare la configurazione K8s: {e}")
+        LOGGER.critical(f"Unable to load K8s configuration: {e}")
         sys.exit(1)
 
 apps_api = client.AppsV1Api()
@@ -136,39 +136,39 @@ def _build_actions_from_plan(
 
 @mcp.tool()
 def get_current_replicas(deployment: str) -> dict[str, Any]:
-    """Legge il numero di repliche correnti e lo stato di un deployment su Kubernetes."""
+    """Read the current replica count and status of a Kubernetes deployment."""
     if deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{deployment}' is not authorized.")
 
     try:
         scale = apps_api.read_namespaced_deployment_scale(name=deployment, namespace=NAMESPACE)
         status = apps_api.read_namespaced_deployment_status(name=deployment, namespace=NAMESPACE)
         
         data = {
-            "replicas_configurate": scale.spec.replicas,
-            "replicas_disponibili": status.status.available_replicas or 0,
-            "replicas_non_pronte": status.status.unavailable_replicas or 0
+            "configured_replicas": scale.spec.replicas,
+            "available_replicas": status.status.available_replicas or 0,
+            "unavailable_replicas": status.status.unavailable_replicas or 0
         }
         return _success_response(data)
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}): {e.reason}")
+        return _error_response(f"K8s API error ({e.status}): {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno: {str(e)}")
+        return _error_response(f"Internal error: {str(e)}")
 
 @mcp.tool()
 def set_replicas(deployment: str, replicas: int) -> dict[str, Any]:
     """
-    Modifica il numero di repliche di un deployment (Scale Up / Scale Down).
-    Fallisce automaticamente se viola i limiti di sicurezza (MIN_REPLICAS / EMERGENCY_MAX_REPLICAS).
+    Modify the replica count of a deployment (scale up / scale down).
+    Fails automatically if it violates safety limits (MIN_REPLICAS / EMERGENCY_MAX_REPLICAS).
     """
     if deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{deployment}' is not authorized.")
     
-    # GUARDRAIL ECONOMICO E DI SICUREZZA
+    # Economic and safety guardrail
     if replicas < MIN_REPLICAS or replicas > EMERGENCY_MAX_REPLICAS:
         return _error_response(
-            f"Azione bloccata dalla Safety Policy: {replicas} è fuori dai limiti consentiti "
-            f"(Min: {MIN_REPLICAS}, Max emergenza: {EMERGENCY_MAX_REPLICAS}). Richiesta ignorata."
+            f"Action blocked by Safety Policy: {replicas} is outside the allowed limits "
+            f"(Min: {MIN_REPLICAS}, Emergency max: {EMERGENCY_MAX_REPLICAS}). Request ignored."
         )
 
     # ECONOMIC BUDGET GUARD: prevent any direct scaling that would violate the global budget
@@ -179,12 +179,12 @@ def set_replicas(deployment: str, replicas: int) -> dict[str, Any]:
         projected_usage = _budget_usage(projected)
         if projected_usage > TOTAL_REPLICA_BUDGET:
             return _error_response(
-                f"Azione bloccata dal Budget Globale: la modifica porta l'uso totale a {projected_usage}, "
-                f"sopra il budget consentito di {TOTAL_REPLICA_BUDGET}."
+                f"Action blocked by the Global Budget: the change would raise total usage to {projected_usage}, "
+                f"above the allowed budget of {TOTAL_REPLICA_BUDGET}."
             )
     except Exception:
         # If budget check fails (unexpected), be conservative and block the action
-        return _error_response("Impossibile validare il budget globale: azione bloccata per sicurezza.")
+        return _error_response("Unable to validate the global budget: action blocked for safety.")
 
     try:
         body = {"spec": {"replicas": replicas}}
@@ -193,21 +193,21 @@ def set_replicas(deployment: str, replicas: int) -> dict[str, Any]:
             namespace=NAMESPACE, 
             body=body
         )
-        LOGGER.info(f"Eseguito scaling: {deployment} -> {replicas} repliche")
+        LOGGER.info(f"Scaling executed: {deployment} -> {replicas} replicas")
         return _success_response(
             {"deployment": deployment, "new_replicas": replicas},
-            msg=f"Scaling completato con successo a {replicas} repliche."
+            msg=f"Scaling completed successfully to {replicas} replicas."
         )
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante lo scaling: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) during scaling: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante lo scaling: {str(e)}")
+        return _error_response(f"Internal error during scaling: {str(e)}")
 
 @mcp.tool()
 def get_hpa_limits(deployment: str) -> dict[str, Any]:
-    """Legge i limiti HPA correnti del deployment e i limiti budget/emergenza consentiti."""
+    """Read the current HPA limits for the deployment and the allowed budget/emergency limits."""
     if deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{deployment}' is not authorized.")
 
     try:
         hpa = autoscaling_api.read_namespaced_horizontal_pod_autoscaler(
@@ -223,13 +223,13 @@ def get_hpa_limits(deployment: str) -> dict[str, Any]:
         }
         return _success_response(data)
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante lettura HPA: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) while reading HPA: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante lettura HPA: {str(e)}")
+        return _error_response(f"Internal error while reading HPA: {str(e)}")
 
 @mcp.tool()
 def get_budget_state() -> dict[str, Any]:
-    """Restituisce stato budget globale: repliche correnti, costi per servizio e margine residuo."""
+    """Return the global budget state: current replicas, per-service costs, and remaining margin."""
     try:
         current = _read_all_current_replicas()
         current_usage = _budget_usage(current)
@@ -245,9 +245,9 @@ def get_budget_state() -> dict[str, Any]:
         }
         return _success_response(data)
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante lettura budget: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) while reading budget: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante lettura budget: {str(e)}")
+        return _error_response(f"Internal error while reading budget: {str(e)}")
 
 @mcp.tool()
 def plan_budget_allocation(
@@ -256,17 +256,17 @@ def plan_budget_allocation(
     donor_priority_csv: str = "",
 ) -> dict[str, Any]:
     """
-    Calcola un piano di riallocazione globale sotto vincolo di budget condiviso.
-    Non applica modifiche: restituisce solo una proposta verificata.
+    Compute a global reallocation plan under the shared budget constraint.
+    Does not apply changes: returns only a verified proposal.
     """
     if target_deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{target_deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{target_deployment}' is not authorized.")
 
     floor = DEPLOYMENT_MIN_REPLICAS[target_deployment]
     if desired_replicas < floor or desired_replicas > EMERGENCY_MAX_REPLICAS:
         return _error_response(
-            f"Azione bloccata dalla Safety Policy: desired_replicas={desired_replicas} è fuori limiti "
-            f"(Min servizio: {floor}, Max emergenza: {EMERGENCY_MAX_REPLICAS})."
+            f"Action blocked by Safety Policy: desired_replicas={desired_replicas} is outside the limits "
+            f"(Service min: {floor}, Emergency max: {EMERGENCY_MAX_REPLICAS})."
         )
 
     try:
@@ -284,7 +284,7 @@ def plan_budget_allocation(
 
         if not plan.get("feasible", False):
             return _error_response(
-                f"Piano non fattibile nel budget globale: {plan.get('reason', 'vincolo non soddisfatto')}"
+                f"Plan is not feasible within the global budget: {plan.get('reason', 'constraint not satisfied')}"
             )
 
         donor_scale_down = plan.get("donor_scale_down") or {}
@@ -309,11 +309,11 @@ def plan_budget_allocation(
             "donor_scale_down": donor_scale_down,
             "actions_in_order": actions,
         }
-        return _success_response(data, msg="Piano budget globale calcolato con successo.")
+        return _success_response(data, msg="Global budget plan computed successfully.")
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante pianificazione budget: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) during budget planning: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante pianificazione budget: {str(e)}")
+        return _error_response(f"Internal error during budget planning: {str(e)}")
 
 @mcp.tool()
 def execute_budget_allocation(
@@ -322,18 +322,18 @@ def execute_budget_allocation(
     donor_priority_csv: str = "",
 ) -> dict[str, Any]:
     """
-    Esegue una riallocazione di repliche con budget globale condiviso.
-    Ordine sicuro: prima scale-down dei donor, poi scale-up del target.
-    Se una step fallisce, tenta rollback delle modifiche gia applicate.
+    Execute a replica reallocation with the shared global budget.
+    Safe order: scale donors down first, then scale the target up.
+    If a step fails, attempt rollback of already applied changes.
     """
     if target_deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{target_deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{target_deployment}' is not authorized.")
 
     floor = DEPLOYMENT_MIN_REPLICAS[target_deployment]
     if desired_replicas < floor or desired_replicas > EMERGENCY_MAX_REPLICAS:
         return _error_response(
-            f"Azione bloccata dalla Safety Policy: desired_replicas={desired_replicas} e fuori limiti "
-            f"(Min servizio: {floor}, Max emergenza: {EMERGENCY_MAX_REPLICAS})."
+            f"Action blocked by Safety Policy: desired_replicas={desired_replicas} is outside the limits "
+            f"(Service min: {floor}, Emergency max: {EMERGENCY_MAX_REPLICAS})."
         )
 
     try:
@@ -350,7 +350,7 @@ def execute_budget_allocation(
         )
         if not plan.get("feasible", False):
             return _error_response(
-                f"Esecuzione budget non fattibile: {plan.get('reason', 'vincolo non soddisfatto')}"
+                f"Budget execution is not feasible: {plan.get('reason', 'constraint not satisfied')}"
             )
 
         proposed = plan["proposed_replicas"]
@@ -389,7 +389,7 @@ def execute_budget_allocation(
                     )
 
                 return _error_response(
-                    "Esecuzione parziale fallita: rollback tentato.",
+                    "Partial execution failed: rollback attempted.",
                     data={
                         "target_deployment": target_deployment,
                         "desired_replicas": desired_replicas,
@@ -430,33 +430,33 @@ def execute_budget_allocation(
             "applied_changes": applied_changes,
             "rollback_attempted": False,
         }
-        return _success_response(data, msg="Riallocazione budget eseguita con successo.")
+        return _success_response(data, msg="Budget reallocation executed successfully.")
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante esecuzione budget: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) during budget execution: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante esecuzione budget: {str(e)}")
+        return _error_response(f"Internal error during budget execution: {str(e)}")
 
 @mcp.tool()
 def set_hpa_max_replicas(deployment: str, max_replicas: int) -> dict[str, Any]:
     """
-    Imposta temporaneamente il limite massimo dell'HPA del deployment.
-    Consentito solo nell'intervallo [BUDGET_MAX_REPLICAS, EMERGENCY_MAX_REPLICAS].
+    Temporarily set the deployment HPA maximum.
+    Allowed only within [BUDGET_MAX_REPLICAS, EMERGENCY_MAX_REPLICAS].
     """
     if deployment not in TARGET_DEPLOYMENTS:
-        return _error_response(f"Accesso negato. Deployment '{deployment}' non autorizzato.")
+        return _error_response(f"Access denied. Deployment '{deployment}' is not authorized.")
 
     # Do not allow raising HPA max above per-service budget. Emergency increases must use
     # an explicit, audited path (e.g., operator intervention). This prevents the HPA
     # from autonomously scaling a deployment beyond the global shared budget.
     if max_replicas < BUDGET_MAX_REPLICAS or max_replicas > EMERGENCY_MAX_REPLICAS:
         return _error_response(
-            f"Azione bloccata dalla Safety Policy: max_replicas={max_replicas} è fuori dai limiti consentiti "
-            f"(Budget: {BUDGET_MAX_REPLICAS}, Max emergenza: {EMERGENCY_MAX_REPLICAS})."
+            f"Action blocked by Safety Policy: max_replicas={max_replicas} is outside the allowed limits "
+            f"(Budget: {BUDGET_MAX_REPLICAS}, Emergency max: {EMERGENCY_MAX_REPLICAS})."
         )
 
     if max_replicas > BUDGET_MAX_REPLICAS:
         return _error_response(
-            f"Azione bloccata: non è consentito alzare l'HPA above il limite per-servizio del budget ({BUDGET_MAX_REPLICAS})."
+            f"Action blocked: raising the HPA above the per-service budget limit is not allowed ({BUDGET_MAX_REPLICAS})."
         )
 
     try:
@@ -469,7 +469,7 @@ def set_hpa_max_replicas(deployment: str, max_replicas: int) -> dict[str, Any]:
 
         if max_replicas < current_min:
             return _error_response(
-                f"Azione bloccata: max_replicas={max_replicas} è inferiore a minReplicas corrente ({current_min})."
+                f"Action blocked: max_replicas={max_replicas} is below the current minReplicas ({current_min})."
             )
 
         body = {"spec": {"maxReplicas": max_replicas}}
@@ -480,7 +480,7 @@ def set_hpa_max_replicas(deployment: str, max_replicas: int) -> dict[str, Any]:
         )
 
         LOGGER.info(
-            "Aggiornato limite HPA",
+            "Updated HPA limit",
             extra={
                 "deployment": deployment,
                 "old_max_replicas": current_max,
@@ -496,16 +496,172 @@ def set_hpa_max_replicas(deployment: str, max_replicas: int) -> dict[str, Any]:
                 "budget_max_replicas": BUDGET_MAX_REPLICAS,
                 "emergency_max_replicas": EMERGENCY_MAX_REPLICAS,
             },
-            msg=f"HPA maxReplicas aggiornato con successo a {max_replicas}.",
+            msg=f"HPA maxReplicas updated successfully to {max_replicas}.",
         )
     except client.exceptions.ApiException as e:
-        return _error_response(f"Errore K8s API ({e.status}) durante aggiornamento HPA: {e.reason}")
+        return _error_response(f"K8s API error ({e.status}) during HPA update: {e.reason}")
     except Exception as e:
-        return _error_response(f"Errore interno durante aggiornamento HPA: {str(e)}")
+        return _error_response(f"Internal error during HPA update: {str(e)}")
+
+
+@mcp.tool()
+def set_hpa_max_replicas_temporary(
+    deployment: str,
+    max_replicas: int,
+    duration_seconds: int = 600,
+    cpu_down_threshold: int = 50,
+) -> dict[str, Any]:
+    """
+    Temporarily raise the HPA `maxReplicas` for `deployment`.
+    Adds annotations to the HPA recording the original value and expiry.
+    The annotation keys are: `guardian.temp_orig`, `guardian.temp_until`, `guardian.temp_cpu_threshold`.
+    A separate check/revert tool will remove the temporary setting when traffic drops or when expired.
+    """
+    if deployment not in TARGET_DEPLOYMENTS:
+        return _error_response(f"Access denied. Deployment '{deployment}' is not authorized.")
+
+    try:
+        hpa = autoscaling_api.read_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE)
+        orig_max = hpa.spec.max_replicas
+
+        # Patch HPA maxReplicas
+        body = {"spec": {"maxReplicas": int(max_replicas)}}
+        autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE, body=body)
+
+        # Annotate HPA with temp metadata
+        until = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=int(duration_seconds))).isoformat()
+        annotations = hpa.metadata.annotations or {}
+        annotations["guardian.temp_orig"] = str(orig_max)
+        annotations["guardian.temp_until"] = until
+        annotations["guardian.temp_cpu_threshold"] = str(int(cpu_down_threshold))
+
+        patch_body = {"metadata": {"annotations": annotations}}
+        autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE, body=patch_body)
+
+        LOGGER.info("Temporarily raised HPA maxReplicas", extra={"deployment": deployment, "new_max": max_replicas, "orig_max": orig_max, "until": until})
+        return _success_response({"deployment": deployment, "new_max": int(max_replicas), "orig_max": orig_max, "until": until}, msg="Temporary HPA maxReplicas set")
+    except client.exceptions.ApiException as exc:
+        return _error_response(f"K8s API error: {exc.reason} ({exc.status})")
+    except Exception as exc:
+        return _error_response(f"Internal error: {str(exc)}")
+
+
+@mcp.tool()
+def check_and_revert_temp_hpa(deployment: str | None = None) -> dict[str, Any]:
+    """
+    Scan either a single `deployment` HPA or all HPAs and revert any temporary maxReplicas
+    if either the expiry timestamp has passed or current CPU utilization is below the configured threshold.
+    Returns list of actions taken.
+    """
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    def _parse_temp_timestamp(value: Any) -> datetime.datetime:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("missing timestamp")
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+
+    def _safe_int(value: Any, fallback: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return fallback
+
+    try:
+        hpa_list = [autoscaling_api.read_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE)] if deployment else autoscaling_api.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE).items
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for hpa in hpa_list:
+            name = hpa.metadata.name
+            ann = hpa.metadata.annotations or {}
+            if not ann.get("guardian.temp_until"):
+                continue
+
+            try:
+                orig = _safe_int(ann.get("guardian.temp_orig"), int(hpa.spec.max_replicas or 0))
+                until = _parse_temp_timestamp(ann.get("guardian.temp_until"))
+                cpu_thr = _safe_int(ann.get("guardian.temp_cpu_threshold"), 50)
+            except Exception as exc:
+                errors.append({"hpa": name, "error": f"invalid temp annotations: {exc}"})
+                continue
+
+            should_revert = False
+            reason = ""
+            if now >= until:
+                should_revert = True
+                reason = "expired"
+            else:
+                # Check current metric if available
+                cur_metrics = getattr(hpa.status, 'current_metrics', None) or []
+                if cur_metrics:
+                    try:
+                        cur_val = int(cur_metrics[0].resource.current.averageUtilization)
+                        if cur_val < cpu_thr:
+                            should_revert = True
+                            reason = f"cpu_below_threshold:{cur_val}<{cpu_thr}"
+                    except Exception:
+                        pass
+
+            if should_revert:
+                try:
+                    # Revert hpa.spec.maxReplicas first so the workload can scale back down naturally.
+                    autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(
+                        name=name,
+                        namespace=NAMESPACE,
+                        body={"spec": {"maxReplicas": orig}},
+                    )
+
+                    # Remove annotations we set; if this fails, keep the restored spec and report a partial revert.
+                    new_ann = dict(ann)
+                    for k in ["guardian.temp_orig", "guardian.temp_until", "guardian.temp_cpu_threshold"]:
+                        new_ann.pop(k, None)
+                    autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(
+                        name=name,
+                        namespace=NAMESPACE,
+                        body={"metadata": {"annotations": new_ann}},
+                    )
+                    results.append({"hpa": name, "action": "reverted", "reverted_to": orig, "reason": reason})
+                except Exception as exc:
+                    errors.append({"hpa": name, "error": f"revert failed after decision {reason}: {exc}"})
+
+        payload: dict[str, Any] = {"reverted": results}
+        if errors:
+            payload["errors"] = errors
+        msg = "Checked temporary HPAs"
+        if errors:
+            msg = "Checked temporary HPAs with partial errors"
+        return _success_response(payload, msg=msg)
+    except client.exceptions.ApiException as exc:
+        return _error_response(f"K8s API error: {exc.reason} ({exc.status})")
+    except Exception as exc:
+        return _error_response(f"Internal error: {str(exc)}")
+
+
+@mcp.tool()
+def list_temporary_hpas() -> dict[str, Any]:
+    """List HPAs annotated as temporary by the guardian."""
+    found: list[dict[str, Any]] = []
+    try:
+        items = autoscaling_api.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE).items
+        for hpa in items:
+            ann = hpa.metadata.annotations or {}
+            if ann.get("guardian.temp_until"):
+                found.append({"name": hpa.metadata.name, "annotations": ann, "spec_max": hpa.spec.max_replicas, "status": getattr(hpa.status, 'current_replicas', None)})
+        return _success_response(found)
+    except client.exceptions.ApiException as exc:
+        return _error_response(f"K8s API error: {exc.reason} ({exc.status})")
+    except Exception as exc:
+        return _error_response(f"Internal error: {str(exc)}")
 
 @mcp.tool()
 def get_deployment_resources(deployment: str, namespace: str = "default") -> str:
-    """Restituisce i limiti e le richieste di CPU e RAM attuali per un deployment."""
+    """Return the current CPU and RAM requests/limits for a deployment."""
     clean_name = re.sub(r'-[0-9]+$', '', deployment)
     try:
         apps_v1 = client.AppsV1Api()
@@ -520,19 +676,19 @@ def get_deployment_resources(deployment: str, namespace: str = "default") -> str
                 raise e
         
         containers = workload.spec.template.spec.containers
-        report = [f"Tipo: {w_type}"]
+        report = [f"Type: {w_type}"]
         for c in containers:
             resources = c.resources
-            limits = resources.limits if resources.limits else "Non impostati"
-            requests = resources.requests if resources.requests else "Non impostati"
+            limits = resources.limits if resources.limits else "Not set"
+            requests = resources.requests if resources.requests else "Not set"
             report.append(f"Container '{c.name}': Limits {limits}, Requests {requests}")
         return " | ".join(report)
     except ApiException as e:
         if e.status == 404:
-            return f"Nessun Deployment o StatefulSet trovato con il nome '{clean_name}'"
-        return f"Errore nell'accesso alle API K8s: {e.reason} ({e.status})"
+            return f"No Deployment or StatefulSet found with name '{clean_name}'"
+        return f"K8s API access error: {e.reason} ({e.status})"
     except Exception as e:
-        return f"Errore interno del tool: {str(e)}"
+        return f"Internal tool error: {str(e)}"
 
 @mcp.tool()
 def restore_cpu_limits(deployment: str) -> dict[str, Any]:
@@ -623,7 +779,7 @@ def restore_cpu_limits(deployment: str) -> dict[str, Any]:
 
 @mcp.tool()
 def get_workload_health(workload_query: str) -> str:
-    """Cerca workload per nome parziale o esatto e restituisce lo stato di salute dei relativi Pod (fase, età, readiness, riavvii)."""
+    """Search workloads by partial or exact name and return pod health (phase, age, readiness, restarts)."""
     query = (workload_query or "").strip().lower()
     
     try:
@@ -632,7 +788,7 @@ def get_workload_health(workload_query: str) -> str:
         
         matched_workloads = []
         
-        # 1. Recupera TUTTI i Deployment e StatefulSet
+        # 1. Retrieve all Deployments and StatefulSets
         deployments = apps_api.list_namespaced_deployment(namespace=NAMESPACE)
         for d in deployments.items:
             if query in d.metadata.name.lower():
@@ -644,12 +800,12 @@ def get_workload_health(workload_query: str) -> str:
                 matched_workloads.append((s.metadata.name, "StatefulSet", s.spec.selector.match_labels))
 
         if not matched_workloads:
-            return f"Nessun workload trovato corrispondente alla query '{query}'."
+            return f"No workload found matching query '{query}'."
 
         report = []
         now = datetime.datetime.now(datetime.timezone.utc)
         
-        # 2. Per ogni match, interroga i Pod usando i label selector
+        # 2. For each match, query Pods using the label selector
         for name, w_type, labels_dict in matched_workloads:
             if not labels_dict:
                 continue
@@ -657,9 +813,9 @@ def get_workload_health(workload_query: str) -> str:
             label_selector = ",".join([f"{k}={v}" for k, v in labels_dict.items()])
             pods = core_api.list_namespaced_pod(namespace=NAMESPACE, label_selector=label_selector)
             
-            report.append(f"\n--- Stato per {w_type}: {name} ---")
+            report.append(f"\n--- Status for {w_type}: {name} ---")
             if not pods.items:
-                report.append("Nessun Pod attivo trovato (possibile scale a 0).")
+                report.append("No active Pods found (possible scale-to-zero).")
                 continue
                 
             for p in pods.items:
@@ -677,14 +833,14 @@ def get_workload_health(workload_query: str) -> str:
                         status_details += f"[{c.name} waiting: {c.state.waiting.reason}] "
                 
                 report.append(
-                    f"- Pod: {p_name} | Fase: {phase} | Età: {age_mins}m | "
-                    f"Pronto: {ready_count}/{total_count} | Riavvii: {restarts} | {status_details.strip()}"
+                    f"- Pod: {p_name} | Phase: {phase} | Age: {age_mins}m | "
+                    f"Ready: {ready_count}/{total_count} | Restarts: {restarts} | {status_details.strip()}"
                 )
                 
         return "\n".join(report)
 
     except Exception as exc:
-        return f"Errore API K8s durante la ricerca: {str(exc)}"
+        return f"K8s API error during search: {str(exc)}"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

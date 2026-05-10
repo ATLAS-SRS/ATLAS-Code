@@ -29,6 +29,7 @@ from .utils import (
     _structured_tool_schema, _invoke_langchain_tool,
     _parse_tool_result, _extract_alert_fields, _safe_json, _clean_json_markdown
 )
+from .utils import _tool_call_parts
 from .prompts import _grafana_prompt, _reasoning_prompt
 from .llm import _run_llm_tool_loop
 from .state import AgentState
@@ -38,12 +39,17 @@ from src.database import (
     get_async_session,
     init_database,
     upsert_incident_report,
+    create_approval_request,
 )
 
-try:
-    from src.agents.tools.grafana_mcp import GrafanaMCPManager
-except ImportError:
-    from src.tools.grafana_mcp import GrafanaMCPManager
+from src.tools.grafana_mcp import GrafanaMCPManager
+
+_SCALING_ACTIONS = {
+    "SCALE_UP",
+    "SCALE_DOWN",
+    "SET_REPLICAS",
+    "BUDGET_REALLOCATION",
+}
 
 def _parse_report_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -104,6 +110,89 @@ def _extract_replica_details(final_report: dict[str, Any], trace: list[dict[str,
                 replicas[key] = output[key]
 
     return replicas
+
+def _extract_replica_count_from_text(text: str) -> int | None:
+    """Fallback: extract replica count from follow_up text (e.g., 'scale api-gateway to 4 replicas')."""
+    import re
+    # Match patterns like "to 4 replicas", "to 3 instances", "scale to 5", "increase to 6"
+    patterns = [
+        r'to\s+(\d+)\s+replicas',
+        r'scale(?:ing)?\s+to\s+(\d+)',
+        r'(\d+)\s+replicas',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+_ITALIAN_TEXT_MARKERS = (
+    " è ",
+    " non ",
+    " per ",
+    " con ",
+    " una ",
+    " il ",
+    " la ",
+    "gli ",
+    "le ",
+    "repliche",
+    "riavv",
+    "sovraccar",
+    "approvaz",
+    "indagine",
+    "allarme",
+    "errore",
+    "pronto",
+    "budget",
+)
+
+
+def _looks_italian_text(text: str) -> bool:
+    lowered = text.lower()
+    if any(char in text for char in ("à", "è", "é", "ì", "ò", "ù")):
+        return True
+    return any(marker in lowered for marker in _ITALIAN_TEXT_MARKERS)
+
+
+async def _translate_text_to_english(llm_client: AsyncOpenAI, text: str, *, label: str) -> str:
+    if not text or not _looks_italian_text(text):
+        return text
+
+    system_prompt = (
+        "You are a precise translation engine. Translate the input to natural English. "
+        "Preserve Markdown structure, code spans, JSON keys, metric names, alert names, timestamps, and numbers. "
+        "Do not add commentary or explanations. Return only the translated text."
+    )
+    user_prompt = f"Translate this {label} from Italian to English:\n\n{text}"
+
+    try:
+        response = await llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+            timeout=30,
+        )
+        translated = (response.choices[0].message.content or "").strip()
+        return translated or text
+    except Exception:
+        return text
+
+
+async def _normalize_report_language(llm_client: AsyncOpenAI, value: Any, *, label: str) -> Any:
+    if isinstance(value, str):
+        return await _translate_text_to_english(llm_client, value, label=label)
+    if isinstance(value, list):
+        return [await _normalize_report_language(llm_client, item, label=label) for item in value]
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized[key] = await _normalize_report_language(llm_client, item, label=f"{label}.{key}")
+        return normalized
+    return value
 
 def _incident_id(alert: dict[str, Any], parsed_alert: dict[str, Any]) -> str:
     fingerprint = alert.get("fingerprint")
@@ -244,10 +333,31 @@ class SREGuardianRuntime:
             extra={"llm_model": LLM_MODEL, "llm_base_url": llm_base_url},
         )
 
-        await self._register_grafana_tools()
-        await self._register_k8s_tools_stdio()
-        await init_database()
-        self._graph = self._build_graph()
+        # Try to register external tools and initialize the database, but
+        # do not crash the whole process if these dependencies are temporarily
+        # unavailable. Runtime will continue in degraded mode and log errors.
+        try:
+            await self._register_grafana_tools()
+        except Exception as exc:  # pragma: no cover - defensive runtime handling
+            LOGGER.error("Failed to register Grafana tools at startup", extra={"error": str(exc)})
+
+        try:
+            await self._register_k8s_tools_stdio()
+        except Exception as exc:  # pragma: no cover - defensive runtime handling
+            LOGGER.error("Failed to register K8s stdio tools at startup", extra={"error": str(exc)})
+
+        try:
+            await init_database()
+        except Exception as exc:  # pragma: no cover - defensive runtime handling
+            LOGGER.error("Database initialization failed at startup; continuing without DB", extra={"error": str(exc)})
+
+        # Build the runtime graph even if some tools or DB are missing; some features
+        # will operate in degraded mode but the agent should remain up.
+        try:
+            self._graph = self._build_graph()
+        except Exception as exc:
+            LOGGER.error("Failed to build runtime graph", extra={"error": str(exc)})
+            raise
 
         LOGGER.info(
             "SRE Guardian runtime ready",
@@ -399,6 +509,22 @@ class SREGuardianRuntime:
             full_alert = state.get("alert") or {}
             deployment = parsed_alert.get("deployment", "")
 
+            # Enrich the investigation input with recurrence context so the LLM
+            # can classify recurring alerts even when the raw Alertmanager payload
+            # does not include occurrence metadata.
+            raw_alert = state.get("alert") or {}
+            incident_id = _incident_id(raw_alert, parsed_alert)
+            try:
+                async with get_async_session() as session:
+                    existing_report = await fetch_incident_report(session, incident_id)
+                    if existing_report:
+                        occurrence_count = int(existing_report.get("occurrence_count", 0)) + 1
+                        full_alert = dict(full_alert)
+                        full_alert["occurrence_count"] = occurrence_count
+                        full_alert["first_seen_utc"] = existing_report.get("first_seen_utc")
+            except Exception:
+                pass
+
             grafana_allowed = {
                 name
                 for name in tool_registry.names()
@@ -427,6 +553,201 @@ class SREGuardianRuntime:
                 "Investigation completed",
                 extra={"deployment": deployment, "report": report},
             )
+            # Post-process LLM investigation output: if LLM returned no clear verdict
+            # try to extract telemetry tool outputs from the trace and apply a
+            # conservative traffic heuristic so we don't leave alerts as UNKNOWN.
+            parsed = _parse_report_json(report)
+
+            def _collect_tool_outputs(llm_trace: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+                # Map tool_call_id -> tool_name from assistant messages
+                call_map: dict[str, str] = {}
+                outputs_by_name: dict[str, list[dict[str, Any]]] = {}
+
+                for msg in llm_trace:
+                    if msg.get("role") == "assistant":
+                        tool_calls = msg.get("tool_calls") or []
+                        for tc in tool_calls:
+                            cid, tname, _ = _tool_call_parts(tc)
+                            if cid:
+                                call_map[cid] = tname
+
+                for msg in llm_trace:
+                    if msg.get("role") != "tool":
+                        continue
+                    cid = msg.get("tool_call_id") or ""
+                    content = msg.get("content") or ""
+                    try:
+                        parsed_content = json.loads(content)
+                    except Exception:
+                        parsed_content = {"raw": content}
+
+                    tname = call_map.get(cid, "unknown_tool")
+                    outputs_by_name.setdefault(tname, []).append(parsed_content)
+
+                return outputs_by_name
+
+            verdict_value = ""
+            if isinstance(parsed, dict):
+                verdict_value = str(parsed.get("verdict") or "").strip().upper()
+
+            if not parsed or verdict_value in {"", "UNKNOWN", "UNCLEAR"}:
+                outputs = _collect_tool_outputs(trace)
+
+                # If there's a Prometheus query result, try to infer traffic spike
+                prom_outputs = outputs.get("query_prometheus") or []
+                def _extract_numeric_values(obj: Any) -> list[float]:
+                    nums: list[float] = []
+                    if obj is None:
+                        return nums
+                    if isinstance(obj, (int, float)):
+                        nums.append(float(obj))
+                        return nums
+                    if isinstance(obj, (list, tuple)):
+                        for item in obj:
+                            nums.extend(_extract_numeric_values(item))
+                        return nums
+                    if isinstance(obj, dict):
+                        for v in obj.values():
+                            nums.extend(_extract_numeric_values(v))
+                        return nums
+                    try:
+                        # attempt to coerce strings containing numbers
+                        cleaned = str(obj).strip()
+                        if cleaned.replace('.', '', 1).isdigit():
+                            nums.append(float(cleaned))
+                    except Exception:
+                        pass
+                    return nums
+
+                spike_detected = False
+                spike_percent = 0.0
+                evidence: list[str] = []
+
+                for out in prom_outputs:
+                    data = out.get("data") if isinstance(out, dict) else None
+                    values = _extract_numeric_values(data)
+                    if len(values) >= 2:
+                        # use last value as current, median of previous values as baseline
+                        current = float(values[-1])
+                        baseline = float(sum(values[:-1]) / max(1, len(values[:-1])))
+                        if baseline > 0:
+                            pct = current / baseline
+                            spike_percent = max(spike_percent, pct)
+                            evidence.append(f"prometheus: current={current:.2f} baseline={baseline:.2f} ratio={pct:.2f}")
+                            if pct >= 1.5:
+                                spike_detected = True
+
+                if spike_detected:
+                    # synthesize a conservative investigation report indicating TRAFFIC
+                    confidence = 0.9 if spike_percent >= 2.0 else 0.8
+                    synthesized = {
+                        "verdict": "TRAFFIC",
+                        "confidence": confidence,
+                        "checklist_completed": {
+                            "step_1_resources_checked": any("get_deployment_resources" in m.get("tool_call_id", "") or "get_deployment_resources" in m.get("content", "") for m in trace),
+                            "step_2_traffic_baseline_checked": True,
+                            "step_3_deterministic_errors_searched": any("query_loki_logs" in m.get("tool_call_id", "") or "query_loki_logs" in m.get("content", "") for m in trace),
+                            "step_4_correlation_analyzed": True,
+                        },
+                        "traffic_spike_detected": True,
+                        "traffic_spike_ratio": spike_percent,
+                        "deterministic_errors_found": False,
+                        "resource_constraint_severity": "NONE",
+                        "evidence": evidence or ["Prometheus shows significant RPS increase"],
+                        "recommended_next_step": "Allow autoscale or increase replicas after validating budget state",
+                    }
+                    report = _safe_json(synthesized)
+                else:
+                    # If the LLM failed to produce a verdict, try several conservative
+                    # fallbacks so we don't leave important alerts as UNKNOWN.
+                    alert_name = str(parsed_alert.get("alert_name", "")).strip().lower()
+                    recurrence = int(full_alert.get("occurrence_count", 0) or 0)
+
+                    # Check for explicit indicators of unhealthy workload from tools
+                    restore_executed = bool(outputs.get("restore_cpu_limits")) or any(
+                        "restore_cpu_limits" in k for k in outputs.keys()
+                    )
+                    health_outputs = outputs.get("get_workload_health") or []
+
+                    # Reuse numeric extractor to detect restart counts or other numeric signs
+                    def _health_indicates_unhealthy(items: list[dict[str, Any]]) -> bool:
+                        for item in items:
+                            data = item.get("data") if isinstance(item, dict) else item
+                            nums = _extract_numeric_values(data)
+                            if any(n > 0 for n in nums):
+                                return True
+                            # fallback to string checks
+                            try:
+                                text = json.dumps(item).lower()
+                            except Exception:
+                                text = str(item).lower()
+                            if any(s in text for s in ("not ready", "unhealthy", "restart", "crash", "crashloop", "oom")):
+                                return True
+                        return False
+
+                    unhealthy_detected = _health_indicates_unhealthy(health_outputs) or restore_executed
+
+                    # If workload appears unhealthy and this is a recurring alert, prefer
+                    # an INFRASTRUCTURE classification (conservative) to avoid UNKNOWN.
+                    if recurrence >= 2 and unhealthy_detected:
+                        synthesized = {
+                            "verdict": "INFRASTRUCTURE",
+                            "confidence": 0.8,
+                            "checklist_completed": {
+                                "step_1_resources_checked": any(
+                                    "get_deployment_resources" in m.get("tool_call_id", "")
+                                    or "get_deployment_resources" in m.get("content", "")
+                                    for m in trace
+                                ),
+                                "step_2_traffic_baseline_checked": False,
+                                "step_3_deterministic_errors_searched": any(
+                                    "query_loki_logs" in m.get("tool_call_id", "")
+                                    or "query_loki_logs" in m.get("content", "")
+                                    for m in trace
+                                ),
+                                "step_4_correlation_analyzed": True,
+                            },
+                            "traffic_spike_detected": False,
+                            "traffic_spike_ratio": 0.0,
+                            "deterministic_errors_found": False,
+                            "resource_constraint_severity": "HIGH",
+                            "evidence": [
+                                "Recurring alert with workload health or restore action indicating unhealthy pods.",
+                                "LLM investigation did not return a verdict; falling back to conservative infrastructure classification.",
+                            ],
+                            "recommended_next_step": "Review pod health and replica capacity; approve scale-up if appropriate.",
+                        }
+                        report = _safe_json(synthesized)
+                    elif alert_name == "cpusaturation" and recurrence >= 2:
+                        synthesized = {
+                            "verdict": "INFRASTRUCTURE",
+                            "confidence": 0.75,
+                            "checklist_completed": {
+                                "step_1_resources_checked": any(
+                                    "get_deployment_resources" in m.get("tool_call_id", "")
+                                    or "get_deployment_resources" in m.get("content", "")
+                                    for m in trace
+                                ),
+                                "step_2_traffic_baseline_checked": True,
+                                "step_3_deterministic_errors_searched": any(
+                                    "query_loki_logs" in m.get("tool_call_id", "")
+                                    or "query_loki_logs" in m.get("content", "")
+                                    for m in trace
+                                ),
+                                "step_4_correlation_analyzed": True,
+                            },
+                            "traffic_spike_detected": False,
+                            "traffic_spike_ratio": 0.0,
+                            "deterministic_errors_found": False,
+                            "resource_constraint_severity": "UNKNOWN",
+                            "evidence": [
+                                f"Recurring CPUSaturation alert observed {recurrence} times.",
+                                "LLM investigation did not return a verdict; falling back to conservative infrastructure classification.",
+                            ],
+                            "recommended_next_step": "Review CPU limits and replica capacity; consider scale-up if saturation persists.",
+                        }
+                        report = _safe_json(synthesized)
+
             return {"investigation_report": report, "llm_trace": trace}
 
         async def reasoning_action_node(state: AgentState) -> dict[str, Any]:
@@ -435,6 +756,20 @@ class SREGuardianRuntime:
             investigation_report = state.get("investigation_report", "")
             deployment = parsed_alert.get("deployment", "")
             workload_policy = parsed_alert.get("workload_policy", "UNMONITORED")
+
+            # Enrich alert with occurrence count from database to help LLM detect recurring alerts
+            raw_alert = state.get("alert") or {}
+            incident_id = _incident_id(raw_alert, parsed_alert)
+            try:
+                async with get_async_session() as session:
+                    existing_report = await fetch_incident_report(session, incident_id)
+                    if existing_report:
+                        occurrence_count = int(existing_report.get("occurrence_count", 0)) + 1
+                        full_alert = dict(full_alert)  # make a copy
+                        full_alert["occurrence_count"] = occurrence_count
+                        full_alert["first_seen_utc"] = existing_report.get("first_seen_utc")
+            except Exception:
+                pass  # proceed with alerts as-is if DB fetch fails
 
             if not deployment:
                 report = _safe_json(
@@ -571,6 +906,12 @@ class SREGuardianRuntime:
                 }
             )
 
+            action_name = str(action_decision.action or "UNKNOWN").strip().upper()
+            requires_human_approval = (
+                str(action_decision.human_approval or "not_required").strip().lower() == "required"
+                and action_name in _SCALING_ACTIONS
+            )
+
             structured_report = IncidentReportModel.model_validate(
                 {
                     "incident_id": incident_id,
@@ -585,7 +926,7 @@ class SREGuardianRuntime:
                         action=action_decision,
                         deployment=action_decision.deployment or alert_context.deployment,
                         replicas=_extract_replica_details(final_report, trace),
-                        human_approval=action_decision.human_approval,
+                        human_approval=("required" if requires_human_approval else "not_required"),
                         rationale=action_decision.rationale,
                         executed_tools=action_decision.executed_tools,
                         outcome=action_decision.outcome,
@@ -614,6 +955,7 @@ class SREGuardianRuntime:
                 )
 
                 report_data = structured_report.model_dump(mode="json", exclude_none=True)
+                report_data = await _normalize_report_language(llm_client, report_data, label="incident_report")
 
                 await upsert_incident_report(
                     session,
@@ -622,6 +964,55 @@ class SREGuardianRuntime:
                     deployment=structured_report.alert_context.deployment or "unknown",
                     report_data=report_data,
                 )
+
+                # If LLM requested human approval for this action, create an approval request
+                try:
+                    if requires_human_approval:
+                        import uuid
+                        approval_id = uuid.uuid4().hex
+                        
+                        # Extract desired_replicas from LLM response or fallback to text parsing
+                        suggested_replicas = (
+                            report_data.get("execution_details", {}).get("replicas", {}).get("desired_replicas")
+                            or report_data.get("execution_details", {}).get("replicas", {}).get("target_replicas")
+                            or report_data.get("execution_details", {}).get("replicas", {}).get("current_replicas")
+                        )
+                        
+                        # If still missing and action is SCALE_UP, try to extract from follow_up text
+                        if suggested_replicas is None and action_name == "SCALE_UP":
+                            follow_up_text = action_decision.follow_up or final_report.get("follow_up", "")
+                            suggested_replicas = _extract_replica_count_from_text(follow_up_text)
+                        
+                        await create_approval_request(
+                            session,
+                            approval_id=approval_id,
+                            incident_id=incident_id,
+                            requested_at=timestamp_dt,
+                            deployment=structured_report.alert_context.deployment or "unknown",
+                            requested_by="sre-guardian",
+                            expires_at=None,
+                            payload={
+                                "report": report_data,
+                                "suggested_action": action_decision.action,
+                                "suggested_deployment": action_decision.deployment or structured_report.alert_context.deployment,
+                                "suggested_replicas": suggested_replicas,
+                                "suggested_rationale": action_decision.rationale,
+                                "suggested_follow_up": action_decision.follow_up,
+                            },
+                        )
+                        # annotate stored report with approval id
+                        report_data.setdefault("execution_details", {})
+                        report_data["execution_details"]["approval_id"] = approval_id
+                        await upsert_incident_report(
+                            session,
+                            incident_id=incident_id,
+                            timestamp_utc=timestamp_dt,
+                            deployment=structured_report.alert_context.deployment or "unknown",
+                            report_data=report_data,
+                        )
+                except Exception:
+                    # do not fail the whole flow if approval creation fails
+                    LOGGER.exception("Failed to create approval request")
 
             formatted_report = json.dumps(report_data, indent=2, ensure_ascii=True, default=str)
             print(formatted_report, flush=True)

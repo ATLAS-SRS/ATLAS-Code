@@ -2,7 +2,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: fraud-system-alerts
-  namespace: default # Assicurati che corrisponda al namespace dove gira Prometheus
+  namespace: default # Ensure this matches the namespace where Prometheus is running
   labels:
     release: atlas-monitoring
 spec:
@@ -16,7 +16,7 @@ spec:
         severity: critical
         trigger: agent_sre
       annotations:
-        summary: "Tasso di errore elevato su {{ $labels.service }}"
+        summary: "High error rate on {{ $labels.service }}"
 
     - alert: HighLatency
       expr: histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[3m])) by (le, service, namespace)) > 2.0
@@ -25,7 +25,7 @@ spec:
         severity: warning
         trigger: agent_sre
       annotations:
-        summary: "Latenza critica su {{ $labels.service }}"
+        summary: "Critical latency on {{ $labels.service }}"
 
     - alert: CPUSaturation
       expr: sum(rate(container_cpu_usage_seconds_total{pod!=""}[1m])) by (pod, namespace) / sum(kube_pod_container_resource_limits{resource="cpu"}) by (pod, namespace) > 0.85
@@ -34,7 +34,7 @@ spec:
         severity: warning
         trigger: agent_sre
       annotations:
-        summary: "Saturazione CPU sul pod {{ $labels.pod }}"
+        summary: "CPU saturation on pod {{ $labels.pod }}"
 
     - alert: PodCrashLooping
       expr: label_replace(sum by (pod, namespace) (increase(kube_pod_container_status_restarts_total{namespace="default"}[3m]) > 2.5), "deployment", "$1", "pod", "(.*)-[^-]+-[^-]+")
@@ -43,5 +43,5 @@ spec:
         severity: critical
         trigger: agent_sre
       annotations:
-        summary: "Riavvi multipli sul pod {{ $labels.pod }}"
-        description: "Il pod {{ $labels.pod }} ha subito riavvii multipli negli ultimi 3 minuti. Possibile OOMKilled o fallimento del Liveness Probe."
+        summary: "Multiple restarts on pod {{ $labels.pod }}"
+        description: "Pod {{ $labels.pod }} has restarted multiple times in the last 3 minutes. Possible OOMKilled or liveness probe failure."

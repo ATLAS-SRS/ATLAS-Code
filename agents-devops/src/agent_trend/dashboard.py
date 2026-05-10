@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from typing import Any
 
+import os
+
+import requests
+
 import streamlit as st
 from openai import OpenAI
 
@@ -9,10 +13,24 @@ from src.agent_guardian.config import _normalize_llm_base_url
 from src.agent_trend.trend_analyzer import analyze_recent_trends_sync
 from src.database import (
     fetch_incident_reports_sync,
+    fetch_pending_approvals_sync,
     fetch_trend_reports_sync,
     get_sync_session,
     init_database_sync,
 )
+
+API_BASE_URL = os.getenv("GUARDIAN_API_URL", "http://localhost:8000").rstrip("/")
+API_FALLBACK_URL = os.getenv(
+    "GUARDIAN_API_FALLBACK_URL",
+    "http://atlas-guardian-service.default.svc.cluster.local:8000",
+).rstrip("/")
+
+_SCALING_ACTIONS = {
+    "SCALE_UP",
+    "SCALE_DOWN",
+    "SET_REPLICAS",
+    "BUDGET_REALLOCATION",
+}
 
 st.set_page_config(layout="wide", page_title="ATLAS Post-Mortem")
 
@@ -109,6 +127,23 @@ def load_trends() -> list[dict[str, Any]]:
     )
 
 
+def load_pending_approvals() -> list[dict[str, Any]]:
+    try:
+        with get_sync_session() as session:
+            approvals = fetch_pending_approvals_sync(session)
+    except Exception as exc:
+        return [
+            {
+                "approval_id": "database-error",
+                "incident_id": "",
+                "deployment": "",
+                "load_error": str(exc),
+            }
+        ]
+
+    return approvals
+
+
 def trigger_trend_analysis() -> list[str]:
     llm_client = OpenAI(
         base_url=_normalize_llm_base_url(LLM_API_URL),
@@ -165,7 +200,119 @@ def render_action_details(action: Any) -> None:
         st.write(str(action))
 
 
-def render_incident(incident: dict[str, Any]) -> None:
+def _approval_remediation_text(approval: dict[str, Any]) -> str:
+    payload = approval.get("payload") or {}
+    report = payload.get("report") or {}
+    execution = report.get("execution_details") or {}
+    action = execution.get("action") or {}
+
+    suggested_action = payload.get("suggested_action") or action.get("action") or "UNKNOWN"
+    deployment = payload.get("suggested_deployment") or execution.get("deployment") or approval.get("deployment", "unknown")
+    replicas = payload.get("suggested_replicas")
+    rationale = payload.get("suggested_rationale") or action.get("rationale") or execution.get("rationale") or "No rationale captured."
+    follow_up = payload.get("suggested_follow_up") or action.get("follow_up") or execution.get("follow_up") or ""
+
+    lines = [f"Suggested action: {suggested_action}", f"Deployment: {deployment}"]
+    if replicas is not None:
+        lines.append(f"Suggested replicas: {replicas}")
+    if rationale:
+        lines.append(f"Why: {rationale}")
+    if follow_up:
+        lines.append(f"Follow-up: {follow_up}")
+    return "\n".join(lines)
+
+
+def _approval_action(approval: dict[str, Any]) -> str:
+    payload = approval.get("payload") or {}
+    report = payload.get("report") or {}
+    execution = report.get("execution_details") or {}
+    action = execution.get("action") or {}
+    value = payload.get("suggested_action") or action.get("action") or "UNKNOWN"
+    return str(value).strip().upper()
+
+
+def _approval_requires_execute(approval: dict[str, Any]) -> bool:
+    return _approval_action(approval) in _SCALING_ACTIONS
+
+
+def _guardian_post(path: str, *, json_payload: dict[str, Any], timeout: int = 15) -> requests.Response:
+    """POST to Guardian using the primary URL, then a cluster fallback if needed."""
+    urls = [API_BASE_URL]
+    if API_FALLBACK_URL and API_FALLBACK_URL not in urls:
+        urls.append(API_FALLBACK_URL)
+
+    last_exc: Exception | None = None
+    for base_url in urls:
+        try:
+            response = requests.post(f"{base_url}{path}", json=json_payload, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except Exception as exc:
+            last_exc = exc
+            continue
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Guardian request failed without an exception")
+
+
+def _approval_modal(approval: dict[str, Any]) -> None:
+    payload = approval.get("payload") or {}
+    suggested_replicas = payload.get("suggested_replicas")
+    action_name = _approval_action(approval)
+    requires_execute = _approval_requires_execute(approval)
+
+    if not hasattr(st, "dialog"):
+        st.warning("Streamlit dialog support is unavailable; showing approval inline.")
+        st.info(_approval_remediation_text(approval))
+        return
+
+    @st.dialog(f"Approval required: {approval.get('deployment', 'unknown')}")
+    def _dialog() -> None:
+        st.markdown("### Suggested remediation")
+        st.code(_approval_remediation_text(approval), language="text")
+        st.caption(f"Action type: {action_name}")
+        if suggested_replicas is not None:
+            st.caption(f"Default replicas: {suggested_replicas}")
+        if not requires_execute:
+            st.info("Rollback is recommendation-only. No execution or approval buttons are available.")
+            return
+
+        allow_col, deny_col = st.columns(2)
+        with allow_col:
+            if st.button("Allow", type="primary", use_container_width=True):
+                try:
+                    replicas = int(suggested_replicas) if suggested_replicas is not None else 1
+                    _guardian_post(
+                        f"/approvals/{approval['approval_id']}/approve",
+                        json_payload={"approver": os.getenv("USER", "streamlit_user"), "reason": "approved from dashboard"},
+                    )
+                    _guardian_post(
+                        f"/approvals/{approval['approval_id']}/execute",
+                        json_payload={"replicas": replicas},
+                    )
+                    st.success("Remediation executed and approved.")
+                    st.session_state.pop("selected_approval_id", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Allow failed: {exc}")
+        with deny_col:
+            if st.button("Not allow", use_container_width=True):
+                try:
+                    _guardian_post(
+                        f"/approvals/{approval['approval_id']}/deny",
+                        json_payload={"approver": os.getenv("USER", "streamlit_user"), "reason": "denied from dashboard"},
+                    )
+                    st.info("Remediation denied.")
+                    st.session_state.pop("selected_approval_id", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Deny failed: {exc}")
+
+    _dialog()
+
+
+def render_incident(incident: dict[str, Any], approvals: list[dict[str, Any]]) -> None:
     alert_context = incident.get("alert_context") or {}
     investigation = incident.get("investigation") or {}
     execution = incident.get("execution_details") or {}
@@ -240,6 +387,23 @@ def render_incident(incident: dict[str, Any]) -> None:
     if execution.get("executed_tools"):
         st.write("Executed tools: " + ", ".join(map(str, execution["executed_tools"])))
 
+    incident_id = incident.get("incident_id")
+    incident_approval = next((item for item in approvals if item.get("incident_id") == incident_id), None)
+
+    if incident_approval:
+        st.subheader("Pending Approval")
+        st.info(_approval_remediation_text(incident_approval))
+
+        if _approval_requires_execute(incident_approval):
+            st.warning("This incident is waiting for human approval.")
+            if st.button("Review remediation", type="primary"):
+                st.session_state["selected_approval_id"] = incident_approval.get("approval_id")
+                st.rerun()
+        else:
+            st.info("Rollback recommendation only. Execute manually via your deployment process.")
+    elif execution.get("human_approval") == "required":
+        st.warning("Human approval is required but no pending approval request was found for this incident.")
+
     st.subheader("Final Summary")
     st.markdown(str(incident.get("final_summary") or "No final summary captured."))
 
@@ -249,7 +413,9 @@ def render_incident(incident: dict[str, Any]) -> None:
 
 def render_incident_view() -> None:
     incidents = load_incidents()
+    approvals = load_pending_approvals()
     st.sidebar.caption(f"Incident reports: {len(incidents)}")
+    st.sidebar.caption(f"Pending approvals: {len(approvals)}")
 
     if not incidents:
         st.title("No incidents yet")
@@ -266,7 +432,8 @@ def render_incident_view() -> None:
     ]
     selected_label = st.sidebar.selectbox("Incident Report", labels)
     selected_incident = incidents[labels.index(selected_label)]
-    render_incident(selected_incident)
+
+    render_incident(selected_incident, approvals)
 
 
 def render_trend(trend: dict[str, Any]) -> None:
@@ -395,6 +562,15 @@ def main() -> None:
     )
     if st.sidebar.button("Refresh"):
         st.rerun()
+
+    selected_approval_id = st.session_state.get("selected_approval_id")
+    if selected_approval_id:
+        approvals = load_pending_approvals()
+        approval = next((item for item in approvals if item.get("approval_id") == selected_approval_id), None)
+        if approval:
+            _approval_modal(approval)
+        else:
+            st.session_state.pop("selected_approval_id", None)
 
     auto_refresh = st.sidebar.toggle("Auto-refresh", value=False)
     if auto_refresh:

@@ -17,6 +17,8 @@ This runtime accepts Alertmanager webhooks and executes a reasoning loop for rem
 - Applies scaling and remediation actions with Kubernetes Deployment scale API
 - Enforces a global replica budget so scaling actions never exceed `TOTAL_REPLICA_BUDGET`
 - Deduplicates alerts with `ALERT_DEDUP_WINDOW_SECONDS` (default 60s) and serializes concurrent runs per deployment
+- When a remediation requires human approval, `/approvals/{id}/execute` only runs after the approval is marked `APPROVED`
+- Human-approved scale-ups use a temporary HPA max-replica patch first, then scale the Deployment, and the Guardian schedules a revert monitor that restores HPA control after the temporary window or when load drops
 
 Default target list:
 - `api-gateway,scoring-system,enrichment-system,notification-system`
@@ -36,6 +38,7 @@ The tool server exposes Prometheus and Kubernetes operations used by the Guardia
 - **Operational Safety**: Human-in-the-loop and auditable scaling actions
 - **LM Studio Support**: Optional local LLM reasoning with deterministic fallback paths
 - **Budget Allocation Tools**: The runtime also exposes `get_hpa_limits`, `get_budget_state`, `plan_budget_allocation`, `execute_budget_allocation`, `set_hpa_max_replicas`, `restore_cpu_limits`, and `get_workload_health`
+- **Temporary HPA Tools**: The Kubernetes MCP server also exposes `set_hpa_max_replicas_temporary`, `check_and_revert_temp_hpa`, and `list_temporary_hpas` for human-approved burst scaling that later hands control back to HPA
 
 ## Architecture
 

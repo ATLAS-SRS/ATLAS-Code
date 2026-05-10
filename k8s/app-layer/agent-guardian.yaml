@@ -188,6 +188,8 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: DATABASE_URL
+            - name: GUARDIAN_API_URL
+              value: "http://atlas-guardian-service.default.svc.cluster.local:8000"
             - name: HEALTH_CHECK_PORT
               value: "8002"
           ports:

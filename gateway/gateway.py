@@ -10,8 +10,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from structured_logger import get_logger
 
-# --- 1. CONFIGURAZIONE KAFKA ---
-# Leggiamo l'indirizzo dal docker-compose.yml. Se non c'è, usiamo localhost
+# --- 1. KAFKA CONFIGURATION ---
+# Read the address from docker-compose.yml. If it is missing, use localhost.
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 KAFKA_TOPIC = "raw-transactions"
 producer: AIOKafkaProducer = None
@@ -164,8 +164,8 @@ async def lifespan(app: FastAPI):
         extra={"phase": "shutdown", "shutdown_phase": "complete"},
     )
 
-# --- 3. CONFIGURAZIONE RATE LIMITER ---
-# Usa l'IP del client per limitare le richieste (es. max 10 al minuto per IP)
+# --- 3. RATE LIMITER CONFIGURATION ---
+# Use the client IP to limit requests (e.g. max 10 per minute per IP)
 limiter = Limiter(key_func=get_remote_address)
 
 # Inizializziamo FastAPI
@@ -173,8 +173,8 @@ app = FastAPI(title="ATLAS - API Gateway", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# --- 4. TELEMETRIA (Il gancio per l'Agente) ---
-# Espone in automatico le metriche su /metrics (latenza, conteggio richieste, errori)
+# --- 4. TELEMETRY (The hook for the agent) ---
+# Automatically exposes metrics on /metrics (latency, request count, errors)
 Instrumentator().instrument(app).expose(app)
 
 # --- 5. MODELLI DATI ---
@@ -197,14 +197,14 @@ async def ingest_transaction(request: Request, transaction: Transaction):
     if not kafka_connected:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
-            detail="Servizio di accodamento temporaneamente non pronto."
+            detail="Queueing service is temporarily not ready."
         )
 
     try:
-        # 1. Serializziamo il dato validato
+        # 1. Serialize the validated payload
         payload = transaction.model_dump_json().encode("utf-8")
         
-        # 2. Pattern Event-Driven: pubblichiamo su Kafka in modo asincrono
+        # 2. Event-driven pattern: publish to Kafka asynchronously
         await producer.send_and_wait(KAFKA_TOPIC, payload)
         
         logger.info(
@@ -212,20 +212,20 @@ async def ingest_transaction(request: Request, transaction: Transaction):
             extra={"transaction_id": transaction.transaction_id},
         )
         
-        # 3. Rispondiamo al client rapidamente
+        # 3. Respond to the client quickly
         return {"status": "accepted", "transaction_id": transaction.transaction_id}
         
     except Exception as e:
-        # Pattern Circuit Breaker / Graceful Degradation:
-        # Se Kafka è giù, evitiamo che l'app crashi e ritorniamo 503.
-        # L'Agente leggerà questo errore tramite l'endpoint /metrics.
+        # Circuit breaker / graceful degradation pattern:
+        # If Kafka is down, avoid crashing the app and return 503.
+        # The agent will read this error through the /metrics endpoint.
         logger.error(
             "Failed to send transaction to Kafka",
             extra={"error": str(e), "transaction_id": transaction.transaction_id},
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
-            detail="Servizio di accodamento temporaneamente non disponibile."
+            detail="Queueing service is temporarily unavailable."
         )
 
 # --- 7. KUBERNETES PROBES ---

@@ -186,14 +186,14 @@ services:
       - ./sink-connector-config.json:/config.json
     command: >
       sh -c "
-        echo 'Attendendo le API REST di Kafka Connect...';
+        echo 'Waiting for Kafka Connect REST APIs...';
         while [ $$(curl -s -o /dev/null -w %{http_code} http://kafka-connect:8083/connectors) -ne 200 ]; do
-          echo 'Kafka Connect non è ancora pronto. Riprovo in 5 secondi...';
+          echo 'Kafka Connect is not ready yet. Retrying in 5 seconds...';
           sleep 5;
         done;
-        echo 'Kafka Connect è pronto. Registro il connettore...';
+        echo 'Kafka Connect is ready. Registering the connector...';
         curl -X POST -H 'Content-Type: application/json' --data @/config.json http://kafka-connect:8083/connectors;
-        echo '\nSetup del connettore completato con successo!';
+        echo '\nConnector setup completed successfully!';
       "
     logging: *default-logging
 

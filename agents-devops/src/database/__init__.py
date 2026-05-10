@@ -2,12 +2,17 @@ from .models import Base, IncidentReport, TrendReport
 from .repositories import (
     fetch_incident_report,
     fetch_incident_reports_sync,
+    fetch_pending_approvals_sync,
     fetch_recent_incident_reports,
     fetch_recent_incident_reports_sync,
     fetch_trend_reports_sync,
     upsert_incident_report,
     upsert_trend_report,
     upsert_trend_report_sync,
+    create_approval_request,
+    fetch_pending_approvals,
+    update_approval_status,
+    update_approval_status_sync,
 )
 from .session import (
     ASYNC_DATABASE_URL,
@@ -30,6 +35,7 @@ __all__ = [
     "dispose_sync_database",
     "fetch_incident_report",
     "fetch_incident_reports_sync",
+    "fetch_pending_approvals_sync",
     "fetch_recent_incident_reports",
     "fetch_recent_incident_reports_sync",
     "fetch_trend_reports_sync",
@@ -40,4 +46,8 @@ __all__ = [
     "upsert_incident_report",
     "upsert_trend_report",
     "upsert_trend_report_sync",
+    "create_approval_request",
+    "fetch_pending_approvals",
+    "update_approval_status",
+    "update_approval_status_sync",
 ]

@@ -191,7 +191,12 @@ Scaling behaviors:
 - Mounted as `envFrom` in pod specs
 
 **Secrets**
-- `llm-credentials`: `LLM_API_KEY` (auto-created by deploy.sh)
+- `llm-credentials`: `LLM_API_KEY` (auto-created by deploy.sh; use the following command manually when deploying via API)
+
+  ```bash
+  kubectl create secret generic llm-credentials --from-literal=LLM_API_KEY="YOUR_API_KEY" --dry-run=client -o yaml | kubectl apply -f -
+  ```
+
 - `postgres-credentials`: `DATABASE_URL` (auto-created by deploy.sh)
 - `grafana-mcp-credentials`: Grafana API token (auto-created during deployment)
 
@@ -229,6 +234,7 @@ For local testing with `deploy_kind.sh`:
 - **Tooling Separation**: The scaling runtime keeps the MCP tool server local and speaks to Kubernetes and Prometheus through typed tool calls
 - **Alerting Resilience**: The notification service handles Avro-serialized scored events with graceful fallback decoding for local and mixed-format environments
 - **Operational Guardrails**: Safety checks, approval gates, and replica limits are enforced in the scaling path to keep automated actions auditable
+- **Human-Approved Scaling**: The Guardian now requires an approved request before `/approvals/{id}/execute` will scale a workload, and temporary HPA max-replica increases are recorded with `guardian.temp_*` annotations so the cluster can revert back to normal HPA control when load drops
 
 ## Quick Start
 
