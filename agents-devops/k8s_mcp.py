@@ -522,7 +522,8 @@ def set_hpa_max_replicas_temporary(
 
     try:
         hpa = autoscaling_api.read_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE)
-        orig_max = hpa.spec.max_replicas
+        annotations = dict(hpa.metadata.annotations or {})
+        orig_max = int(annotations.get("guardian.temp_orig") or hpa.spec.max_replicas)
 
         # Patch HPA maxReplicas
         body = {"spec": {"maxReplicas": int(max_replicas)}}
@@ -530,13 +531,20 @@ def set_hpa_max_replicas_temporary(
 
         # Annotate HPA with temp metadata
         until = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=int(duration_seconds))).isoformat()
-        annotations = hpa.metadata.annotations or {}
         annotations["guardian.temp_orig"] = str(orig_max)
         annotations["guardian.temp_until"] = until
         annotations["guardian.temp_cpu_threshold"] = str(int(cpu_down_threshold))
 
         patch_body = {"metadata": {"annotations": annotations}}
-        autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE, body=patch_body)
+        try:
+            autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE, body=patch_body)
+        except Exception:
+            autoscaling_api.patch_namespaced_horizontal_pod_autoscaler(
+                name=deployment,
+                namespace=NAMESPACE,
+                body={"spec": {"maxReplicas": orig_max}},
+            )
+            raise
 
         LOGGER.info("Temporarily raised HPA maxReplicas", extra={"deployment": deployment, "new_max": max_replicas, "orig_max": orig_max, "until": until})
         return _success_response({"deployment": deployment, "new_max": int(max_replicas), "orig_max": orig_max, "until": until}, msg="Temporary HPA maxReplicas set")
@@ -573,6 +581,26 @@ def check_and_revert_temp_hpa(deployment: str | None = None) -> dict[str, Any]:
         except Exception:
             return fallback
 
+    def _current_cpu_utilization(hpa: Any) -> int | None:
+        status = getattr(hpa, "status", None)
+        current_metrics = getattr(status, "current_metrics", None) or getattr(status, "currentMetrics", None) or []
+        for metric in current_metrics:
+            resource = getattr(metric, "resource", None)
+            if resource is None:
+                continue
+            current = getattr(resource, "current", None)
+            if current is None:
+                continue
+            for attr in ("average_utilization", "averageUtilization"):
+                value = getattr(current, attr, None)
+                if value is None:
+                    continue
+                try:
+                    return int(value)
+                except Exception:
+                    continue
+        return None
+
     try:
         hpa_list = [autoscaling_api.read_namespaced_horizontal_pod_autoscaler(name=deployment, namespace=NAMESPACE)] if deployment else autoscaling_api.list_namespaced_horizontal_pod_autoscaler(namespace=NAMESPACE).items
 
@@ -597,16 +625,10 @@ def check_and_revert_temp_hpa(deployment: str | None = None) -> dict[str, Any]:
                 should_revert = True
                 reason = "expired"
             else:
-                # Check current metric if available
-                cur_metrics = getattr(hpa.status, 'current_metrics', None) or []
-                if cur_metrics:
-                    try:
-                        cur_val = int(cur_metrics[0].resource.current.averageUtilization)
-                        if cur_val < cpu_thr:
-                            should_revert = True
-                            reason = f"cpu_below_threshold:{cur_val}<{cpu_thr}"
-                    except Exception:
-                        pass
+                cur_val = _current_cpu_utilization(hpa)
+                if cur_val is not None and cur_val < cpu_thr:
+                    should_revert = True
+                    reason = f"cpu_below_threshold:{cur_val}<{cpu_thr}"
 
             if should_revert:
                 try:

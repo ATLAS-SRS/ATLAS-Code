@@ -297,7 +297,8 @@ async def execute_approval(approval_id: str, payload: dict[str, Any] | None = No
                         if hasattr(runtime, "_tool_registry") and runtime._tool_registry.has("check_and_revert_temp_hpa"):
                             res = await runtime._tool_registry.call("check_and_revert_temp_hpa", {"deployment": dep})
                             data = res.get("data") if isinstance(res, dict) else None
-                            if isinstance(data, list) and any(r.get("action") == "reverted" for r in data):
+                            reverted = data.get("reverted") if isinstance(data, dict) else data
+                            if isinstance(reverted, list) and any(r.get("action") == "reverted" for r in reverted):
                                 return
                         else:
                             return
