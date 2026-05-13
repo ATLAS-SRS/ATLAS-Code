@@ -1,4 +1,3 @@
-
 # ATLAS - Fraud Alert Triage & Escalation Platform
 
 A distributed, AI-powered fraud detection system with intelligent operational management.
@@ -28,12 +27,14 @@ ATLAS implements a fraud detection platform that combines real-time transaction 
 ## Key Features
 
 ### Fraud Detection Pipeline
+
 1. **Transaction Ingestion**: Real-time transaction processing via REST API
 2. **Event Streaming**: Kafka-based decoupling for scalability
 3. **Fraud Analysis**: AI-powered evaluation with historical context
 4. **Database Storage**: PostgreSQL for transaction persistence
 
 ### Intelligent Operations
+
 - **Auto-Scaling**: Feed-forward orchestration scales the full processing pipeline from a global ingress load indicator
 - **Load Monitoring**: Real-time metrics from Prometheus
 - **Safety Boundaries**: Configurable thresholds with human oversight
@@ -72,6 +73,7 @@ flowchart LR
 ### Component Details
 
 **API Gateway** (`gateway/gateway.py`)
+
 - FastAPI-based entry point exposing `/api/v1/transactions` (POST)
 - Health probes: `/health/live` (liveness), `/health/ready` (readiness with Kafka check)
 - Prometheus metrics exposed on `/metrics`
@@ -79,6 +81,7 @@ flowchart LR
 - Exponential backoff retry logic for Kafka connection
 
 **1. Enrichment System** (`enrichment-system/enrichment_system.py`)
+
 - Consumes JSON from `raw-transactions` topic
 - Performs GeoIP localization using MaxMind GeoLite2 database (`FastIPLocator`)
 - Extracts payment details, user context, and transaction metadata
@@ -86,6 +89,7 @@ flowchart LR
 - Health probes: `localhost:8080/health` and `localhost:8080/ready`
 
 **2. Scoring System** (`scoring-system/scoring.py`)
+
 - Consumes JSON from `enriched-transactions` topic
 - Uses Confluent Schema Registry for Avro serialization
 - Maintains Redis-backed state for user risk history and transaction patterns
@@ -94,39 +98,44 @@ flowchart LR
 - Health probes: `localhost:8080/health` and `localhost:8080/ready`
 
 **3. Notification System** (`notification-system/notification_broker.py`)
+
 - Consumes Avro-serialized messages from `scored-transactions` topic
 - Defensive decoding: Attempts Avro deserialization, falls back to UTF-8 with replacement for corrupted bytes
 - Publishes notifications to `transaction-notifications` topic for downstream consumers
 - Graceful handling of encoding mismatches and mixed-format messages
 
 **Data Storage**
+
 - PostgreSQL: Persists transaction history via Kafka Connect sink (JDBC connector)
 - Redis: Maintains in-memory state for scoring engine (user profiles, pattern cache)
 - Kafka: Durable event log for transaction pipeline (retention configurable)
 
 ### Kafka Topics & Consumer Groups
 
-| Topic | Producer | Consumer(s) | Format | Retention |
-|-------|----------|------------|--------|-----------|
-| `raw-transactions` | API Gateway | Enrichment System | JSON | 7 days |
-| `enriched-transactions` | Enrichment System | Scoring System | JSON | 7 days |
-| `scored-transactions` | Scoring System | Notification System, Kafka Connect Sink | Avro | 7 days |
-| `transaction-notifications` | Notification System | Client subscribers | JSON | 3 days |
+| Topic                       | Producer            | Consumer(s)                             | Format | Retention |
+| --------------------------- | ------------------- | --------------------------------------- | ------ | --------- |
+| `raw-transactions`          | API Gateway         | Enrichment System                       | JSON   | 7 days    |
+| `enriched-transactions`     | Enrichment System   | Scoring System                          | JSON   | 7 days    |
+| `scored-transactions`       | Scoring System      | Notification System, Kafka Connect Sink | Avro   | 7 days    |
+| `transaction-notifications` | Notification System | Client subscribers                      | JSON   | 3 days    |
 
 ### Infrastructure Components
 
 **Redis** (`atlas-redis`)
+
 - State management for scoring engine
 - User risk profiles and historical patterns
 - Connection pooling and timeouts configured
 
 **PostgreSQL** (`atlas-postgres`)
+
 - Transaction history storage
 - Indexed on `transaction_id`, `user_id`, `timestamp`
 - Initialized with schema from `postgres/init.sql`
 - Credentials managed via Kubernetes secrets
 
 **Schema Registry** (`schema-registry`)
+
 - Avro schema versioning and validation
 - Used by scoring system for serialization
 - Used by notification system for deserialization
@@ -134,11 +143,13 @@ flowchart LR
 ### Monitoring & Observability
 
 **Prometheus Metrics**
+
 - API Gateway: HTTP request rate, latency, error rates (via `prometheus-fastapi-instrumentator`)
 - Scaling Agent: Deployment replica counts, RPS measurements
 - All services: Kubernetes pod metrics (CPU, memory, restarts)
 
 **Alert Rules** (`k8s/plt-layer/prometheus-rules.yaml`)
+
 - `HighErrorRate`: Error rate > 5% for 2 minutes (critical)
 - `HighLatency`: p90 latency > 2s for 2 minutes (warning)
 - `CPUSaturation`: CPU usage > 85% of limit (warning)
@@ -146,18 +157,21 @@ flowchart LR
 - All alerts trigger with `trigger: agent_sre` label for Guardian routing
 
 **Health Probes Pattern**
+
 - **Liveness** (`/health/live`): Always returns 200; indicates pod is alive
 - **Readiness** (`/health/ready`): Returns 503 if critical dependencies (Kafka, PostgreSQL) are unavailable; gates traffic admission
 
 ### Horizontal Pod Autoscaler (HPA)
 
 Each microservice has an HPA configured with CPU-based scaling:
+
 - `api-gateway`: 1–2 replicas, 60% CPU target
 - `enrichment-system`: 1–2 replicas, 60% CPU target
 - `scoring-system`: 1–2 replicas, 60% CPU target
 - `notification-system`: 1–2 replicas, 60% CPU target
 
 Scaling behaviors:
+
 - **Scale-up**: Immediate, up to 100% per minute
 - **Scale-down**: 120-second stabilization window to prevent flapping
 
@@ -166,6 +180,7 @@ Scaling behaviors:
 ### Service Discovery & Networking
 
 **ClusterIP Services**
+
 - `api-gateway:8000` - REST endpoint for transaction ingestion
 - `enrichment-system:8080` - Health probes (internal)
 - `scoring-system:8080` - Health probes (internal)
@@ -176,21 +191,25 @@ Scaling behaviors:
 - `schema-registry:8081` - Confluent Schema Registry
 
 **Ingress Routes** (NGINX Controller required)
+
 - `http://fraud-api.127.0.0.1.nip.io` → `api-gateway:8000` (transaction API)
 - `http://locust.127.0.0.1.nip.io` → `locust-master-ui:8089` (load testing UI)
 - `http://guardian-report.127.0.0.1.nip.io` → `atlas-guardian-dashboard-service:8501` (incident dashboard)
 
 **Pod Naming Convention**
+
 - `{deployment-name}-{hash}-{pod-id}` (e.g., `api-gateway-abc123-xyz789`)
 
 ### ConfigMaps & Secrets
 
 **ConfigMap: `fraud-detection-config`**
+
 - Shared environment variables across all compute-layer deployments
 - Contains Kafka broker, Redis, PostgreSQL connection strings
 - Mounted as `envFrom` in pod specs
 
 **Secrets**
+
 - `llm-credentials`: `LLM_API_KEY` (auto-created by deploy.sh; use the following command manually when deploying via API)
 
   ```bash
@@ -198,12 +217,12 @@ Scaling behaviors:
   ```
 
 - `postgres-credentials`: `DATABASE_URL` (auto-created by deploy.sh)
- 
+
 ## Chaos Experiments
 
 Use the chaos agent to run controlled experiments against a target deployment. Two examples below target the `api-gateway` deployment.
 
-1) Throttle CPU limits to 50m (resource starvation):
+1. Throttle CPU limits to 50m (resource starvation):
 
 ```bash
 curl -X POST http://127.0.0.1:8001/trigger-chaos \
@@ -214,7 +233,7 @@ curl -X POST http://127.0.0.1:8001/trigger-chaos \
   }'
 ```
 
-2) Crash simulation: kill one random pod in the target deployment:
+2. Crash simulation: kill one random pod in the target deployment:
 
 ```bash
 curl -X POST http://127.0.0.1:8001/trigger-chaos \
@@ -226,11 +245,13 @@ curl -X POST http://127.0.0.1:8001/trigger-chaos \
 ```
 
 These calls assume you have `kubectl port-forward svc/atlas-chaos-service 8001:8001` running locally or that the chaos agent is reachable at `127.0.0.1:8001`.
+
 - `grafana-mcp-credentials`: Grafana API token (auto-created during deployment)
 
 ### Resource Requests & Limits
 
 All deployments follow Kubernetes best practices:
+
 - **Requests**: CPU and memory guaranteed for scheduling
 - **Limits**: CPU and memory caps to prevent node starvation
 - **Example** (API Gateway):
@@ -246,6 +267,7 @@ All deployments follow Kubernetes best practices:
 ### Kind Cluster Configuration
 
 For local testing with `deploy_kind.sh`:
+
 - **Cluster Name**: `fraud-detection-lab`
 - **Config File**: `k8s/kind-config.yaml`
 - **NGINX Ingress**: Auto-installed from upstream Kubernetes Ingress repo
@@ -258,20 +280,28 @@ For local testing with `deploy_kind.sh`:
 - **SLA**: 99.99% uptime target, sub-second response times for transaction ingestion
 
 ### Recent Platform Improvements
+
 - **Orchestrator Runtime**: Consolidated scaling into a single-loop, multi-deployment LangGraph workflow that evaluates `api-gateway`, `scoring-system`, `enrichment-system`, and `notification-system` sequentially
 - **Tooling Separation**: The scaling runtime keeps the MCP tool server local and speaks to Kubernetes and Prometheus through typed tool calls
-- **Alerting Resilience**: The notification service handles Avro-serialized scored events with graceful fallback decoding for local and mixed-format environments
+- **Alerting Resilience**: The notification service was refactored to handle Avro-serialized scored events with graceful fallback decoding for local and mixed-format environments
 - **Operational Guardrails**: Safety checks, approval gates, and replica limits are enforced in the scaling path to keep automated actions auditable
 - **Human-Approved Scaling**: The Guardian now requires an approved request before `/approvals/{id}/execute` will scale a workload, and temporary HPA max-replica increases are recorded with `guardian.temp_*` annotations so the cluster can revert back to normal HPA control when load drops
+- **Ingress & Load Testing**: Locust ingress routing was fixed to ensure traffic balances across the API gateway pods via the NGINX ingress controller
+- **Autoscaling Fixes**: HPA behavior was corrected and Kafka partitioning tuned so consumers can run in parallel without stalling
+- **Observability Hygiene**: Prometheus alert rules were adjusted to reduce startup noise, and dashboard fields were reformatted for readability
+- **Guardian Tooling**: New MCP tool support for Kubernetes pod status plus alert visualization and trend reporting enhancements
+- **Client Experience**: Added a home-banking demo UI with WebSocket-driven fraud status updates
 
 ## Quick Start
 
 ### Prerequisites
+
 - Docker & Docker Compose
 - Python 3.11+
 - 16GB RAM minimum
 
 ### Local Development
+
 ```bash
 # Start the local stack for development
 docker compose up --build
@@ -284,6 +314,7 @@ docker compose up --build
 ```
 
 ### Kubernetes Deployment
+
 The production-style deployment path uses Kubernetes and the repository deploy scripts, not Docker Compose alone.
 
 Use `deploy.sh` to launch the full pipeline on a Kubernetes cluster:
@@ -295,6 +326,7 @@ bash deploy.sh --build
 This script builds the service images, deploys the data layer, installs the platform observability stack, applies the application manifests, creates required secrets, and waits for rollouts to complete.
 
 Useful options:
+
 - `--skip-data-layer` to reuse existing Kafka, Redis, and PostgreSQL services
 - `--skip-plt` to reuse the monitoring stack
 - `--skip-app-layer` to deploy only the infrastructure layers
@@ -308,6 +340,7 @@ bash deploy_kind.sh --build
 ```
 
 ### Test Transaction Flow
+
 ```bash
 # Send test transaction
 curl -X POST http://localhost:8000/api/v1/transactions \
@@ -320,17 +353,20 @@ curl -X POST http://localhost:8000/api/v1/transactions \
 Use `locust/locustfile.py` to stress the FastAPI gateway endpoint `/api/v1/transactions`.
 
 ### Transaction Client
+
 - Runs as Docker service `transaction-client` (when using `docker-compose.yml`)
 - Generates continuous traffic to `/api/v1/transactions` at a configurable rate
 - Independent of Locust; provides baseline load even without explicit load testing
 - Useful for continuous validation during development
 
 ### Important Behavior
+
 - The Docker service `transaction-client` and Locust are independent traffic generators.
 - If you do not start Locust, the system still receives traffic from `transaction-client` (if running in Compose).
 - If you run both together, the gateway receives combined traffic.
 
 ### Option 1: Run Locust Locally
+
 ```bash
 # Start platform services
 docker compose up -d --build
@@ -345,15 +381,18 @@ locust -f locust/locustfile.py --host=http://localhost:8000
 Open the Locust UI at `http://localhost:8089`.
 
 ### Option 2: Run Locust in Docker
+
 ```bash
 docker run --rm -it --network host -v "$PWD":/mnt/locust locustio/locust \
   -f /mnt/locust/locust/locustfile.py --host=http://localhost:8000
 ```
 
 ### Option 3: Run Locust Against Kubernetes Ingress
+
 Use this option when ATLAS is deployed on Kubernetes.
 
 Prerequisites:
+
 - NGINX Ingress Controller installed and running in the cluster
 - Ingress resource `api-gateway-ingress` applied
 
@@ -382,11 +421,13 @@ locust -f locust/locustfile.py --host=http://localhost:8000
 ```
 
 ### Headless Example (CI-friendly)
+
 ```bash
 locust -f locust/locustfile.py --host=http://localhost:8000 --headless -u 100 -r 10 -t 5m
 ```
 
 ### Isolating Locust Metrics (without built-in client traffic)
+
 ```bash
 # Keep all services but disable the mock transaction client
 docker compose up -d --build --scale transaction-client=0
@@ -399,6 +440,7 @@ The platform uses the `agents-devops` SRE Guardian runtime for alert intake, inv
 The guardian workflow is built around an explicit control loop with tool-call execution, human-approval checkpoints, and deployment-by-deployment reasoning so that actions remain explainable and reviewable.
 
 ### Guardian Container
+
 - Runs from `agents-devops/main_agent_guardian.py`
 - Exposes a FastAPI webhook on port `8000`
 - Spawns `agents-devops/k8s_mcp.py` locally over stdio for Kubernetes control
@@ -406,6 +448,7 @@ The guardian workflow is built around an explicit control loop with tool-call ex
 - Kubernetes deployment is defined in `k8s/app-layer/agent-guardian.yaml`, which bundles the ServiceAccount, RoleBinding, initContainer wait-for-Grafana-MCP step, budget env vars, and the dashboard sidecar deployment
 
 ### Trend Reporting Agent
+
 - **Multi-process orchestration** via `agents-devops/entrypoint.sh`:
   - `uvicorn main_agent_guardian:app` on port `8000` (FastAPI webhook)
   - `python src/agent_trend/health_server.py` on port `8002` (liveness + readiness probes)
@@ -443,6 +486,7 @@ curl -X POST http://localhost:8000/trigger-chaos \
 ### Configuration & Environment Variables
 
 **Guardian Runtime Variables**:
+
 - `TARGET_DEPLOYMENTS`: Kubernetes deployments to monitor (default: `api-gateway,scoring-system,enrichment-system,notification-system`)
 - `NAMESPACE`: Kubernetes namespace (default: `default`)
 - `LM_STUDIO_URL` / `LLM_API_URL`: OpenAI-compatible LLM endpoint
@@ -457,6 +501,7 @@ curl -X POST http://localhost:8000/trigger-chaos \
 - `REPORTS_DIR`: Output directory for incident reports
 
 **Chaos Agent Runtime Variables**:
+
 - `TARGET_DEPLOYMENTS`: Kubernetes deployments eligible for chaos experiments (default: `api-gateway,scoring-system,enrichment-system,notification-system`)
 - `LM_STUDIO_URL` / `LLM_API_URL`: OpenAI-compatible LLM endpoint for the chaos reasoning loop
 - `LLM_MODEL`: Model name for chaos planning and analysis
@@ -466,6 +511,7 @@ curl -X POST http://localhost:8000/trigger-chaos \
 - `LOG_LEVEL`: Logging level (default: `INFO`)
 
 **Validation**:
+
 - Guardian: `DATABASE_URL` and either `LLM_API_URL` or `LM_STUDIO_URL` are required at startup
 - Guardian scaling actions are blocked when the projected total replica usage exceeds `TOTAL_REPLICA_BUDGET`
 - Chaos Agent: `LLM_API_URL` or `LM_STUDIO_URL` required for LLM reasoning
@@ -473,6 +519,7 @@ curl -X POST http://localhost:8000/trigger-chaos \
 - Config validation runs at module import time
 
 ### Runtime Behavior
+
 - FastAPI accepts Alertmanager webhooks immediately and processes firing alerts in background tasks
 - Duplicate alerts are deduplicated with `ALERT_DEDUP_WINDOW_SECONDS`, and concurrent runs for the same deployment are serialized with an in-flight lock
 - Reports are written to `reports/incidents/` and upserted by incident key, so repeated alerts update the same incident record
@@ -482,12 +529,14 @@ curl -X POST http://localhost:8000/trigger-chaos \
 - Health probes on port `8002` allow Kubernetes to monitor pod readiness and restart unhealthy instances
 
 ### LM Studio Support
+
 - `LM_STUDIO_URL`, `LMSTUDIO_BASE_URL`, or `LLM_API_URL` point to the OpenAI-compatible local model server
 - `LM_MODEL` or `LMSTUDIO_MODEL` should match the exact model name exposed by LM Studio, such as `google/gemma-3-12b`
 - The Kubernetes manifest uses `http://host.docker.internal:1234/v1` in Docker Desktop
 - Invalid model output is handled safely inside the client loop
 
 ### Development
+
 - Update `deploy.sh` when the Kubernetes launch sequence changes
 - Update `deploy_kind.sh` when the kind-specific launch sequence changes
 - Update `agents-devops/k8s_mcp.py` when you need new Kubernetes tools
@@ -541,6 +590,7 @@ The Guardian agent integrates with Grafana MCP server for operational context:
 ### Transaction Schema
 
 Transaction input (to API Gateway):
+
 ```json
 {
   "transaction_id": "string (UUID)",
@@ -558,12 +608,14 @@ Transaction input (to API Gateway):
 ```
 
 Enriched transaction (internal):
+
 - All fields from input
 - `country_code`: Derived from GeoIP lookup on `ip_address`
 - `city`: Derived from GeoIP lookup
 - `client_ip`: Extracted from `ip_address`
 
 Scored transaction (Avro serialized):
+
 ```avro
 {
   "transaction_id": "string",
@@ -575,6 +627,7 @@ Scored transaction (Avro serialized):
 ```
 
 ### Rebuild And Redeploy Guardian Agent
+
 ```bash
 # Rebuild Docker image with entrypoint.sh
 docker build -t atlas/agent-guardian:latest agents-devops
@@ -598,11 +651,13 @@ echo "Dashboard: http://guardian-report.127.0.0.1.nip.io"
 ### Monitoring Guardian Agent
 
 **Check logs for startup errors**:
+
 ```bash
 kubectl logs deployment/atlas-guardian-dashboard -f | grep -E "(ERROR|WARN|health)"
 ```
 
 **Verify health probes working**:
+
 ```bash
 kubectl port-forward svc/atlas-guardian-dashboard-service 8002:8002
 curl -v http://localhost:8002/health    # Liveness
@@ -610,6 +665,7 @@ curl -v http://localhost:8002/ready     # Readiness (checks DB)
 ```
 
 **Restart unhealthy pod**:
+
 ```bash
 kubectl delete pod -l app=atlas-guardian-dashboard
 ```
@@ -617,11 +673,13 @@ kubectl delete pod -l app=atlas-guardian-dashboard
 ## Monitoring & Observability
 
 ### Metrics Endpoints
+
 - **Prometheus**: http://localhost:9090
 - **API Gateway Metrics**: http://localhost:8000/metrics
 - **Health Checks**: Built into all services
 
 ### Key Metrics
+
 - Transaction processing rate
 - System resource utilization
 - Container scaling events
@@ -630,11 +688,13 @@ kubectl delete pod -l app=atlas-guardian-dashboard
 ## Operational Safety
 
 ### Human-in-the-Loop
+
 - Critical scaling decisions require human approval
 - Automated actions are logged and auditable
 - Rollback capabilities for failed operations
 
 ### Risk Mitigation
+
 - Resource limits prevent runaway scaling
 - Health checks ensure service availability
 - Circuit breakers for fault isolation
