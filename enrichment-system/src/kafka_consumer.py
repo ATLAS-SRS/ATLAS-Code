@@ -10,7 +10,7 @@ from structured_logger import get_logger
 logger = get_logger("enrichment-system-consumer")
 
 class TransactionConsumer:
-    def __init__(self, broker_url, group_id, topic, auto_offset='earliest'):
+    def __init__(self, broker_url, group_id, topic, auto_offset='earliest', session_timeout_ms=45000, max_poll_interval_ms=300000, heartbeat_interval_ms=3000):
         """
         Inizializza il consumer Kafka. Nessun hardcoding dei parametri operativi.
         """
@@ -18,7 +18,10 @@ class TransactionConsumer:
             'bootstrap.servers': broker_url, 
             'group.id': group_id,
             'auto.offset.reset': auto_offset,
-            'enable.auto.commit': False
+            'enable.auto.commit': False,
+            'session.timeout.ms': session_timeout_ms,
+            'max.poll.interval.ms': max_poll_interval_ms,
+            'heartbeat.interval.ms': heartbeat_interval_ms
         }
 
         self.topic = topic

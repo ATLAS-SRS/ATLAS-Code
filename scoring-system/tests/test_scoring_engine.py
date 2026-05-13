@@ -27,7 +27,7 @@ def make_transaction(**overrides):
 
 def test_tolerant_reader_preserves_extra_fields():
     tx = make_transaction(extra_field="kept")
-    scored = ScoredTransaction(**tx.model_dump(), risk_score=10, risk_level="APPROVATA")
+    scored = ScoredTransaction(**tx.model_dump(), risk_score=10, risk_level="APPROVED")
 
     assert tx.model_extra["extra_field"] == "kept"
     assert scored.model_dump()["extra_field"] == "kept"
@@ -91,7 +91,7 @@ def test_stateless_combo_and_magstripe_are_capped():
 
     assert result.stateless_score == 105
     assert result.score == 100
-    assert result.level == "FRODE"
+    assert result.level == "BLOCKED"
 
 
 def test_ecommerce_without_3ds_adds_risk():
@@ -101,7 +101,7 @@ def test_ecommerce_without_3ds_adds_risk():
     result = evaluator.evaluate(tx)
 
     assert result.stateless_score == 25
-    assert result.level == "SOSPETTA"
+    assert result.level == "SUSPICIOUS"
 
 
 def test_stateful_rules_cover_cascade_velocity_spike_and_impossible_travel():
@@ -125,7 +125,7 @@ def test_stateful_rules_cover_cascade_velocity_spike_and_impossible_travel():
 
     assert result.stateful_score == 180
     assert result.score == 100
-    assert result.level == "FRODE"
+    assert result.level == "BLOCKED"
 
 
 def test_velocity_thresholds_are_distinct():

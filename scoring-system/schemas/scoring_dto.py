@@ -31,4 +31,4 @@ class EnrichedTransactionInput(BaseModel):
 
 class ScoredTransaction(EnrichedTransactionInput):
     risk_score: int
-    risk_level: Literal["APPROVATA", "SOSPETTA", "FRODE"]
+    risk_level: Literal["APPROVED", "SUSPICIOUS", "BLOCKED"]

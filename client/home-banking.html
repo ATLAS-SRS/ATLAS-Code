@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home Banking Demo</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+      :root {
+        --bg-0: #0e1525;
+        --bg-1: #121c2f;
+        --bg-2: #0a2238;
+        --card: #ffffff;
+        --ink: #0a0f1a;
+        --muted: #5b6472;
+        --line: #e6e8ee;
+        --accent: #ff7a18;
+        --accent-2: #36b4ff;
+        --accent-3: #1bc47d;
+        --warn: #f7b500;
+        --danger: #ea4a4a;
+        --shadow: 0 24px 60px rgba(10, 15, 26, 0.15);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          "Space Grotesk",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(
+            1200px 600px at 10% -10%,
+            rgba(255, 122, 24, 0.15),
+            transparent
+          ),
+          radial-gradient(
+            900px 500px at 90% 0%,
+            rgba(54, 180, 255, 0.18),
+            transparent
+          ),
+          linear-gradient(160deg, var(--bg-0), var(--bg-1));
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 20px 80px;
+      }
+
+      .canvas {
+        width: min(1200px, 100%);
+        display: grid;
+        gap: 28px;
+        position: relative;
+      }
+
+      .hero {
+        color: #f7f8fb;
+        display: grid;
+        gap: 12px;
+      }
+
+      .hero h1 {
+        font-size: clamp(2rem, 4vw, 3rem);
+        margin: 0;
+        letter-spacing: -0.02em;
+      }
+
+      .hero p {
+        margin: 0;
+        color: rgba(247, 248, 251, 0.7);
+        font-size: 1.05rem;
+      }
+
+      .banking-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+      }
+
+      .card {
+        background: var(--card);
+        border-radius: 22px;
+        padding: 24px;
+        box-shadow: var(--shadow);
+        border: 1px solid rgba(230, 232, 238, 0.8);
+      }
+
+      .card h2 {
+        margin: 0 0 16px;
+        font-size: 1.2rem;
+      }
+
+      label {
+        display: block;
+        font-size: 0.9rem;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        padding: 12px 14px;
+        font-size: 1rem;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        font-family: inherit;
+        background: #fff;
+      }
+
+      .field {
+        margin-bottom: 16px;
+      }
+
+      .toggle-group {
+        display: grid;
+        gap: 10px;
+      }
+
+      .toggle {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        cursor: pointer;
+        transition:
+          border 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      .toggle input {
+        width: auto;
+      }
+
+      .toggle:hover {
+        border-color: rgba(54, 180, 255, 0.8);
+        transform: translateY(-1px);
+      }
+
+      .cta {
+        margin-top: 20px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      button {
+        padding: 12px 18px;
+        border-radius: 999px;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 1rem;
+        background: linear-gradient(120deg, var(--accent), #ffb347);
+        color: #fff;
+        box-shadow: 0 16px 30px rgba(255, 122, 24, 0.3);
+        transition:
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 34px rgba(255, 122, 24, 0.35);
+      }
+
+      .status {
+        font-family:
+          "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      .feed {
+        display: grid;
+        gap: 14px;
+        max-height: 340px;
+        overflow-y: auto;
+        padding-right: 8px;
+      }
+
+      .feed-item {
+        display: grid;
+        grid-template-columns: 1.2fr 1.2fr 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #fbfcff;
+      }
+
+      .feed-item small {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .pill {
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        width: max-content;
+      }
+
+      .pill.pending {
+        background: rgba(247, 181, 0, 0.16);
+        color: #b27b00;
+      }
+
+      .pill.approved {
+        background: rgba(27, 196, 125, 0.18);
+        color: #0e7a4f;
+      }
+
+      .pill.suspicious {
+        background: rgba(247, 181, 0, 0.16);
+        color: #b27b00;
+      }
+
+      .pill.blocked {
+        background: rgba(234, 74, 74, 0.16);
+        color: #b52c2c;
+      }
+
+      .chip {
+        font-size: 0.75rem;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(54, 180, 255, 0.12);
+        color: #155d9c;
+      }
+
+      .footer-note {
+        color: rgba(247, 248, 251, 0.7);
+        font-size: 0.85rem;
+      }
+
+      @media (max-width: 720px) {
+        .feed-item {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+
+        .cta {
+          flex-direction: column;
+          align-items: stretch;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="canvas">
+      <section class="hero">
+        <h1>Home Banking Control Panel</h1>
+        <p>
+          Demo UI for secure transfer routing with live fraud status updates
+          from the notification stream.
+        </p>
+      </section>
+
+      <section class="banking-grid">
+        <div class="card">
+          <h2>New Transfer</h2>
+          <div class="field">
+            <label for="amount">Amount</label>
+            <input
+              id="amount"
+              type="number"
+              min="1"
+              step="0.01"
+              placeholder="1200.00"
+            />
+          </div>
+          <div class="field">
+            <label for="iban">Target IBAN</label>
+            <input
+              id="iban"
+              type="text"
+              placeholder="DE89 3704 0044 0532 0130 00"
+            />
+          </div>
+          <div class="field">
+            <label>Simulation Mode</label>
+            <div class="toggle-group">
+              <label class="toggle">
+                <input
+                  type="radio"
+                  name="simulation"
+                  value="LEGITIMATE"
+                  checked
+                />
+                Legitimate Traffic
+              </label>
+              <label class="toggle">
+                <input
+                  type="radio"
+                  name="simulation"
+                  value="IMPOSSIBLE_TRAVEL"
+                />
+                Simulate Impossible Travel (Foreign IP)
+              </label>
+              <label class="toggle">
+                <input
+                  type="radio"
+                  name="simulation"
+                  value="BLACKLISTED_IBAN"
+                />
+                Simulate Blacklisted IBAN
+              </label>
+            </div>
+          </div>
+          <div class="cta">
+            <button id="sendTransfer">Send Transfer</button>
+            <span class="status" id="wsStatus">WebSocket: connecting...</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Recent Transfers</h2>
+          <div class="feed" id="feed"></div>
+        </div>
+      </section>
+
+      <p class="footer-note">
+        API Gateway and Notification System URLs are configured in the script
+        below.
+      </p>
+    </main>
+
+    <script>
+      const API_GATEWAY_URL =
+        "http://fraud-api.127.0.0.1.nip.io/api/v1/transactions";
+      const NOTIFICATION_WS_URL =
+        "ws://notifications.127.0.0.1.nip.io/ws/notifications";
+
+      const amountInput = document.getElementById("amount");
+      const ibanInput = document.getElementById("iban");
+      const sendBtn = document.getElementById("sendTransfer");
+      const feed = document.getElementById("feed");
+      const wsStatus = document.getElementById("wsStatus");
+
+      let socket = null;
+      let reconnectTimeout = null;
+
+      const formatAmount = (value) => {
+        const number = Number(value || 0);
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: "USD",
+        }).format(number);
+      };
+
+      const getSimulation = () => {
+        const selected = document.querySelector(
+          "input[name='simulation']:checked",
+        );
+        return selected ? selected.value : "LEGITIMATE";
+      };
+
+      const createFeedItem = ({ id, amount, iban, simulation }) => {
+        const row = document.createElement("div");
+        row.className = "feed-item";
+        row.dataset.id = id;
+        row.innerHTML = `
+          <div>
+            <strong>${formatAmount(amount)}</strong><br />
+            <small>${iban}</small>
+          </div>
+          <div>
+            <div class="chip">${simulation.replaceAll("_", " ")}</div>
+          </div>
+          <div>
+            <small>Transaction</small><br />
+            <span class="status">${id.slice(0, 8)}...</span>
+          </div>
+          <div>
+            <span class="pill pending">PENDING...</span>
+          </div>
+        `;
+        return row;
+      };
+
+      const updateFeedStatus = (id, risk_level) => {
+        const row = feed.querySelector(`[data-id='${id}']`);
+        if (!row) {
+          return;
+        }
+        const pill = row.querySelector(".pill");
+        if (!pill) {
+          return;
+        }
+        console.log(risk_level);
+        if (risk_level === "APPROVED") {
+          pill.className = "pill approved";
+          pill.textContent = "APPROVED";
+        } else if (risk_level === "SUSPICIOUS") {
+          pill.className = "pill suspicious";
+          pill.textContent = "SUSPICIOUS";
+        } else {
+          pill.className = "pill blocked";
+          pill.textContent = "BLOCKED - Fraud Detected";
+        }
+      };
+
+      const generateUUID = () => {
+        if (crypto && typeof crypto.randomUUID === "function") {
+          return crypto.randomUUID();
+        }
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+          /[xy]/g,
+          (char) => {
+            const rand = (Math.random() * 16) | 0;
+            const value = char === "x" ? rand : (rand & 0x3) | 0x8;
+            return value.toString(16);
+          },
+        );
+      };
+
+      const connectWebSocket = () => {
+        if (
+          socket &&
+          (socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING)
+        ) {
+          return;
+        }
+        socket = new WebSocket(NOTIFICATION_WS_URL);
+        wsStatus.textContent = "WebSocket: connecting...";
+
+        socket.addEventListener("open", () => {
+          wsStatus.textContent = "WebSocket: connected";
+        });
+
+        socket.addEventListener("message", (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data && data.transaction_id && data.risk_level) {
+              updateFeedStatus(data.transaction_id, data.risk_level);
+            }
+          } catch (error) {
+            console.warn("Failed to parse WebSocket message", error);
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          wsStatus.textContent = "WebSocket: disconnected, retrying...";
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+          }
+          reconnectTimeout = setTimeout(connectWebSocket, 2000);
+        });
+
+        socket.addEventListener("error", () => {
+          wsStatus.textContent = "WebSocket: error";
+        });
+      };
+
+      connectWebSocket();
+
+      sendBtn.addEventListener("click", async () => {
+        // 1. Dati statici tradotti dal tuo script Locust
+        const USER_BASE = {
+          801: { base_ip: "82.54.12.99", country: "IT", typical_amount: 50 },
+          802: { base_ip: "151.22.33.44", country: "IT", typical_amount: 120 },
+          803: { base_ip: "91.10.20.30", country: "FR", typical_amount: 15 },
+          804: { base_ip: "80.11.22.33", country: "DE", typical_amount: 300 },
+        };
+        const BLACKLISTED_METHODS = [
+          "credit_card_4444",
+          "paypal_stolen_account",
+          "apple_pay_blocked_device",
+        ];
+        const FRAUD_IPS = ["185.10.20.30", "203.45.67.89"];
+
+        // 2. Lettura degli input dalla UI
+        const amountStr = amountInput.value;
+        const ibanStr = ibanInput.value.trim();
+
+        if (!ibanStr) {
+          alert("Please enter a target IBAN.");
+          return;
+        }
+
+        const amountParsed = parseFloat(amountStr);
+        const simulation = getSimulation(); // Torna "LEGITIMATE", "IMPOSSIBLE_TRAVEL" o "BLACKLISTED_IBAN"
+        const transactionId = generateUUID();
+        const currentTimestamp = new Date().toISOString();
+
+        let payload = {};
+
+        // 3. COSTRUZIONE DEL PAYLOAD (Identico a Locust)
+        if (simulation === "BLACKLISTED_IBAN") {
+          payload = {
+            transaction_id: transactionId,
+            timestamp: currentTimestamp,
+            channel: "web",
+            transaction_type: "payment",
+            payment_details: {
+              amount:
+                amountParsed ||
+                parseFloat((Math.random() * 500 + 500).toFixed(2)),
+              currency: "EUR",
+              payment_method:
+                BLACKLISTED_METHODS[
+                  Math.floor(Math.random() * BLACKLISTED_METHODS.length)
+                ],
+            },
+            ip_address: FRAUD_IPS[Math.floor(Math.random() * FRAUD_IPS.length)],
+            user_id: Math.floor(Math.random() * 1000) + 9000, // Utente fittizio per frode
+          };
+        } else if (simulation === "IMPOSSIBLE_TRAVEL") {
+          payload = {
+            transaction_id: transactionId,
+            timestamp: currentTimestamp,
+            channel: "mobile",
+            transaction_type: "payment",
+            payment_details: {
+              amount: amountParsed || 850.0,
+              currency: "EUR",
+              payment_method: "credit_card",
+            },
+            ip_address: FRAUD_IPS[Math.floor(Math.random() * FRAUD_IPS.length)],
+            user_id: 801, // Utente che normalmente è in IT
+          };
+        } else {
+          // LEGITIMATE
+          const userIds = Object.keys(USER_BASE);
+          const randomUserId =
+            userIds[Math.floor(Math.random() * userIds.length)];
+          const userProfile = USER_BASE[randomUserId];
+
+          const typicalAmt = userProfile.typical_amount;
+          const randomizedAmt = typicalAmt * (0.8 + Math.random() * 0.4);
+          const channels = ["web", "mobile", "pos"];
+
+          payload = {
+            transaction_id: transactionId,
+            timestamp: currentTimestamp,
+            channel: channels[Math.floor(Math.random() * channels.length)],
+            transaction_type: "payment",
+            payment_details: {
+              amount: amountParsed || parseFloat(randomizedAmt.toFixed(2)),
+              currency: "EUR",
+              payment_method: "credit_card",
+            },
+            ip_address: userProfile.base_ip,
+            user_id: parseInt(randomUserId),
+          };
+        }
+
+        // 4. Aggiorniamo la UI mettendo la riga in stato PENDING
+        const row = createFeedItem({
+          id: transactionId,
+          amount: payload.payment_details.amount, // Usiamo l'importo calcolato per farlo combaciare visivamente
+          iban: ibanStr,
+          simulation: simulation,
+        });
+        feed.prepend(row);
+
+        console.log("Inviando payload Locust-style:", payload);
+
+        // 5. Invia al backend
+        try {
+          const response = await fetch(API_GATEWAY_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!response.ok) {
+            console.error("API Error HTTP:", response.status);
+            // Se prendiamo ancora 422, lo vediamo subito in rosso
+            updateFeedStatus(transactionId, "BLOCKED");
+          }
+        } catch (error) {
+          console.error("Transfer request failed", error);
+          updateFeedStatus(transactionId, "BLOCKED");
+        }
+      });
+    </script>
+  </body>
+</html>

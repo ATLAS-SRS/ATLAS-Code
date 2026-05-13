@@ -17,7 +17,8 @@ ONLINE_PAYMENT_METHODS = {
     "APPLE_PAY",
     "GOOGLE_PAY",
 }
-
+BLACKLISTED_IPS = {"185.10.20.30", "203.45.67.89"}
+BLACKLISTED_METHODS = {"credit_card_4444", "paypal_stolen_account", "apple_pay_blocked_device"}
 
 @dataclass(frozen=True)
 class RiskEvaluationResult:
@@ -64,6 +65,14 @@ class RiskEvaluator:
 
         if self._is_ecommerce(transaction) and transaction.three_ds_requested is False:
             score += 20
+        
+        if transaction.payment_method.lower() in BLACKLISTED_METHODS:
+            score += 100
+
+        extra_data = transaction.model_extra or {}
+        ip_address = str(extra_data.get("ip_address", "")).strip()
+        if ip_address in BLACKLISTED_IPS:
+            score += 100
 
         return score
 
@@ -97,10 +106,10 @@ class RiskEvaluator:
     @staticmethod
     def _risk_level(score: int) -> str:
         if score <= 20:
-            return "APPROVATA"
+            return "APPROVED"
         if score <= 79:
-            return "SOSPETTA"
-        return "FRODE"
+            return "SUSPICIOUS"
+        return "BLOCKED"
 
     @staticmethod
     def _normalize_timestamp(timestamp: datetime) -> datetime:

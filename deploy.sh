@@ -248,6 +248,7 @@ build_images() {
   docker build -t atlas/agent-guardian:latest -f agents-devops/Dockerfile agents-devops/
   docker build -t atlas/agent-chaos:latest -f agents-chaos/Dockerfile agents-chaos/
   docker build -t atlas/kafka-connect:latest -f Dockerfile.connect .
+  docker build -t atlas/homebanking-mockup:latest -f client/Dockerfile client/
 
   log "Docker images built successfully"
 }
@@ -367,6 +368,7 @@ deploy_app_layer() {
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/services.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/ingress.yaml"
   kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/hpa.yaml"
+  kubectl apply -n "$NAMESPACE" -f "${APP_LAYER_DIR}/homebanking.yaml"
 
   if [[ -f "$SERVICEMONITORS_MANIFEST" ]] && service_monitor_crd_exists; then
     kubectl apply -n "$NAMESPACE" -f "$SERVICEMONITORS_MANIFEST"
@@ -379,6 +381,7 @@ deploy_app_layer() {
   rollout_or_debug deployment enrichment-system "app.kubernetes.io/name=enrichment-system"
   rollout_or_debug deployment scoring-system "app.kubernetes.io/name=scoring-system"
   rollout_or_debug deployment notification-system "app.kubernetes.io/name=notification-system"
+  rollout_or_debug deployment homebanking-ui "app.kubernetes.io/name=homebanking-ui"
 
   if [[ -f "$SCALING_AGENT_MANIFEST" ]]; then
     ensure_llm_credentials_secret
@@ -587,6 +590,7 @@ deploy_ingress_controller() {
   helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
     --namespace ingress-nginx \
     --create-namespace \
+    --set tcp.5432="${NAMESPACE}/atlas-postgres-postgresql:5432" \
     --wait
 
   log "NGINX Ingress Controller is ready"
@@ -651,6 +655,8 @@ Endpoints (tramite NGINX Ingress & nip.io):
   Guardian UI:   http://guardian-report.127.0.0.1.nip.io
   Grafana UI:    http://grafana.127.0.0.1.nip.io
   Prometheus:    http://prometheus.127.0.0.1.nip.io
+  Home Banking UI: http://homebanking.127.0.0.1.nip.io
+  PostgresSQL: ${NAMESPACE}/atlas-postgres-postgresql:5432
 
 Credenziali Grafana:
   User: admin

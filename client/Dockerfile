@@ -1,16 +1,8 @@
-# Usa un'immagine Python ufficiale e leggera come base
-FROM python:3.11-slim
+# Usa l'immagine ufficiale e leggerissima di NGINX
+FROM nginx:alpine
 
-# Imposta la directory di lavoro nel container
-WORKDIR /app
+# Copia il tuo file HTML nella cartella pubblica di NGINX
+COPY home-banking.html /usr/share/nginx/html/index.html
 
-# Copia i requirements e installa le dipendenze
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copia il resto del codice
-COPY client.py .
-COPY health_probe.py .
-
-# Comando di default per avviare lo script
-CMD ["python", "client.py"]
+# Esponi la porta 80
+EXPOSE 80

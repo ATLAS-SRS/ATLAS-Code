@@ -47,8 +47,8 @@ MESSAGES = [
 ]
 
 EXPECTED = {
-    "tx-risk-1": {"risk_score": 100, "risk_level": "FRODE"},
-    "tx-risk-2": {"risk_score": 55, "risk_level": "SOSPETTA"},
+    "tx-risk-1": {"risk_score": 100, "risk_level": "BLOCKED"},
+    "tx-risk-2": {"risk_score": 55, "risk_level": "SUSPICIOUS"},
 }
 
 

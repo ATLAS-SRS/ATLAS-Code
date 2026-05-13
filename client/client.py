@@ -72,7 +72,7 @@ def process_notification(notification: dict) -> None:
     with transaction_lock:
         tx_details = pending_transactions.pop(transaction_id, None)
     
-    if approved or risk_level == "APPROVATA":
+    if approved or risk_level == "APPROVED":
         print(f"✅ Transaction {short_id} APPROVED | Score: {risk_score} | Level: {risk_level}")
         if tx_details:
             print(f"   💰 Amount: {tx_details.get('payment_details', {}).get('amount')} {tx_details.get('payment_details', {}).get('currency')}")

@@ -29,7 +29,8 @@ spec:
         - name: api-gateway
           image: atlas/api-gateway:latest
           imagePullPolicy: IfNotPresent
-          command: ["uvicorn", "gateway:app", "--host", "0.0.0.0", "--port", "8080"]
+          command:
+            ["uvicorn", "gateway:app", "--host", "0.0.0.0", "--port", "8080"]
           ports:
             - name: http
               containerPort: 8080

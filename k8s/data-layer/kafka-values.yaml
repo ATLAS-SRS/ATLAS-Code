@@ -16,7 +16,7 @@ controller:
       cpu: "250m"
       memory: "512Mi"
     limits:
-      cpu: "2000m"  
+      cpu: "2000m"
       memory: "1024Mi"
   overrideConfiguration:
     offsets.topic.replication.factor: "1"
@@ -24,6 +24,7 @@ controller:
     transaction.state.log.min.isr: "1"
     default.replication.factor: "1"
     min.insync.replicas: "1"
+    num.partitions: "6"
 
 broker:
   replicaCount: 1
@@ -33,7 +34,7 @@ broker:
       cpu: "500m"
       memory: "1024Mi"
     limits:
-      cpu: "3000m"  
+      cpu: "3000m"
       memory: "2048Mi"
   overrideConfiguration:
     offsets.topic.replication.factor: "1"
@@ -41,6 +42,7 @@ broker:
     transaction.state.log.min.isr: "1"
     default.replication.factor: "1"
     min.insync.replicas: "1"
+    num.partitions: "6"
 
 metrics:
   enabled: true
