@@ -78,6 +78,8 @@ spec:
               value: "8"
             - name: REQUEST_TIMEOUT_SECONDS
               value: "300"
+            - name: MAX_TOOL_STEPS
+              value: "10"
             - name: DEPLOYMENT_MIN_REPLICAS
               value: "api-gateway=1,scoring-system=1,enrichment-system=1,notification-system=1"
             - name: DEPLOYMENT_POD_COSTS
