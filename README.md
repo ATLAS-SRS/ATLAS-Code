@@ -198,6 +198,34 @@ Scaling behaviors:
   ```
 
 - `postgres-credentials`: `DATABASE_URL` (auto-created by deploy.sh)
+ 
+## Chaos Experiments
+
+Use the chaos agent to run controlled experiments against a target deployment. Two examples below target the `api-gateway` deployment.
+
+1) Throttle CPU limits to 50m (resource starvation):
+
+```bash
+curl -X POST http://127.0.0.1:8001/trigger-chaos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_deployment": "api-gateway",
+    "objective": "Use resource starvation only. Apply throttle_cpu_limits strictly to 50m on the target deployment."
+  }'
+```
+
+2) Crash simulation: kill one random pod in the target deployment:
+
+```bash
+curl -X POST http://127.0.0.1:8001/trigger-chaos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_deployment": "api-gateway",
+    "objective": "Use crash simulation only. Kill one random pod in the target deployment."
+  }'
+```
+
+These calls assume you have `kubectl port-forward svc/atlas-chaos-service 8001:8001` running locally or that the chaos agent is reachable at `127.0.0.1:8001`.
 - `grafana-mcp-credentials`: Grafana API token (auto-created during deployment)
 
 ### Resource Requests & Limits
